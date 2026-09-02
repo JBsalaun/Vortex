@@ -13,6 +13,8 @@ packages:
   - ./.github/actions/fingerprints
   - ./.github/actions/linear-release
 
+injectWorkspacePackages: true
+
 catalog:
   7z-bin: github:Nexus-Mods/7z-bin#3298c42e69e3220dc39694bc2f610c077c3e213a
   "@actions/core": 1.11.1

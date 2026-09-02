@@ -203,6 +203,7 @@ settings:
   autoInstallPeers: true
   dedupePeers: true
   excludeLinksFromLockfile: false
+  injectWorkspacePackages: true
 
 catalogs:
   default:
@@ -4171,6 +4172,9 @@ importers:
       '@nosferatu500/theme-file-explorer':
         specifier: 'catalog:'
         version: 3.0.21(@nosferatu500/react-sortable-tree@4.4.0)(@types/hoist-non-react-statics@3.3.7)(@types/node@24.12.2)(@types/react@18.3.31)(react-dom@18.3.1)(react@18.3.1)
+      '@vortex/adaptor-cyberpunk2077':
+        specifier: workspace:*
+        version: link:../../packages/adaptors/cyberpunk2077
       '@opentelemetry/api':
         specifier: 'catalog:'
         version: 1.9.1

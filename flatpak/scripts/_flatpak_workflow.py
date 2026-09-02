@@ -46,15 +46,15 @@ def resolve_flatpak_paths(build_dir: str, manifest: str, repo: str) -> FlatpakPa
 
 def sync_flatpak_build_inputs(root: Path) -> None:
     sync_generated_sources(
-        lockfile=root / "yarn.lock",
+        lockfile=root / "pnpm-lock.yaml",
         output=root / "flatpak/generated-sources.json",
         hash_file=root / "flatpak/generated-sources.hash",
-        recursive=True,
+        recursive=False,
     )
 
     sync_generated_nuget_sources(
-        search_root=root / "extensions",
-        projects=None,
+        search_root=root / "tools/dotnetprobe",
+        projects=[root / "tools/dotnetprobe/dotnetprobe.csproj"],
         output=root / "flatpak/generated-nuget-sources.json",
         hash_file=root / "flatpak/generated-nuget-sources.hash",
         dotnet="9",

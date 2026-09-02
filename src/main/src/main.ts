@@ -118,7 +118,11 @@ function setEnv(key: string, value: string, force?: boolean) {
   }
 }
 
-if (process.env.NODE_ENV !== "development") {
+// Packaged builds do not contain development-only dependencies. Zypak starts
+// Electron as a default app, which makes app.isPackaged false even though the
+// application itself is loaded from app.asar.
+const runningFromAsar = path.extname(app.getAppPath()) === ".asar";
+if (app.isPackaged || runningFromAsar || process.env.NODE_ENV !== "development") {
   setEnv("NODE_ENV", "production", true);
 }
 
@@ -300,6 +304,7 @@ async function main(): Promise<void> {
 
   const downloadManager = new DownloadManager({ concurrency: 1 });
   const uploadManager = new UploadManager({ userAgent: `Vortex/${app.getVersion()}` });
+  const application = new Application(mainArgs);
 
   initIpcHandlers();
   initDownloadIpc(downloadManager);
@@ -349,7 +354,7 @@ async function main(): Promise<void> {
     /** ignored */
   }
 
-  new Application(mainArgs);
+  void application;
 }
 
 main().catch((err: unknown) => {

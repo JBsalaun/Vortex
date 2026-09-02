@@ -83,9 +83,19 @@ class Steam implements IGameStore {
     //      is used by the gameinfo-steam extension as well).
     //  - The steam Id in string form.
     //  - The directory path which contains the game's executable.
-    if (this.isCustomExecObject(appInfo) && appInfo.launchType === "gamestore") {
-      return this.getPosixPath(appInfo).then((posix) =>
-        opn(posix).catch((err) => PromiseBB.resolve()),
+    const customExec = this.isCustomExecObject(appInfo);
+    if (
+      (customExec && appInfo.launchType === "gamestore") ||
+      (process.platform === "linux" && process.env.IS_FLATPAK === "true")
+    ) {
+      const uriInfo = customExec
+        ? appInfo
+        : {
+            appId: appInfo.steamAppId ? appInfo.steamAppId.toString() : appInfo.toString(),
+            parameters: [],
+          };
+      return this.getPosixPath(uriInfo).then((posix) =>
+        opn(posix).catch(() => PromiseBB.resolve()),
       );
     }
     const info = appInfo.steamAppId ? appInfo.steamAppId.toString() : appInfo;

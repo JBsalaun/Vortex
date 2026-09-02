@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Hash helpers for Flatpak generated-sources synchronization."""
+"""Hash helpers for Flatpak pnpm generated-sources synchronization."""
 
 import hashlib
 import os
@@ -9,68 +9,10 @@ from typing import List, Optional, Tuple
 from _flatpak_env import repo_root
 
 
-IGNORED_RECURSIVE_DIRS = {
-    ".git",
-    ".flatpak-builder",
-    ".venv-flatpak",
-    "flatpak-repo",
-    "node_modules",
-    "build-flatpak",
-    "dist",
-    "out",
-}
-
-ALLOWED_RECURSIVE_DIRS = {
-    "api",
-    "app",
-    "extensions",
-}
-
-
-def _collect_recursive_lockfiles(root: Path) -> List[Path]:
-    lockfiles: set[Path] = set()
-
-    root_lockfile = root / "yarn.lock"
-    if root_lockfile.exists():
-        lockfiles.add(root_lockfile)
-
-    for top_level in sorted(ALLOWED_RECURSIVE_DIRS):
-        search_root = root / top_level
-        if not search_root.exists():
-            continue
-
-        for current_root, dirnames, filenames in os.walk(search_root):
-            current = Path(current_root)
-
-            # Keep traversal fast and avoid generated/cache directories.
-            dirnames[:] = [
-                dirname
-                for dirname in dirnames
-                if dirname not in IGNORED_RECURSIVE_DIRS
-                and not dirname.startswith(".venv")
-            ]
-
-            if "yarn.lock" in filenames:
-                lockfiles.add(current / "yarn.lock")
-
-    return sorted(lockfiles, key=lambda path: path.relative_to(root).as_posix())
-
-
 def collect_lockfiles(lockfile: Path, recursive: bool) -> List[Path]:
     root = repo_root()
     if not lockfile.is_absolute():
         lockfile = root / lockfile
-
-    if recursive:
-        lockfiles = _collect_recursive_lockfiles(root)
-        if lockfile.exists() and lockfile not in lockfiles:
-            lockfiles.append(lockfile)
-            lockfiles = sorted(
-                lockfiles, key=lambda path: path.relative_to(root).as_posix()
-            )
-        if not lockfiles:
-            raise FileNotFoundError("No yarn.lock files found in repository.")
-        return lockfiles
 
     if not lockfile.exists():
         raise FileNotFoundError(f"Lockfile not found: {lockfile}")

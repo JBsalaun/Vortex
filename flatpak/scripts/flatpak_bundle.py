@@ -72,6 +72,7 @@ def main() -> None:
             build_dir=paths.build_dir,
             manifest=paths.manifest,
             repo_dir=paths.repo_dir,
+            install_deps_from="flathub",
         )
 
     run_command(

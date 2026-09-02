@@ -129,9 +129,6 @@ class Application {
   constructor(args: IParameters) {
     this.mArgs = args;
 
-    // Set up main process extensions IPC handlers
-    setupMainExtensions();
-
     ipcMain.on("show-window", () => this.showMainWindow(args?.startMinimized));
     app.commandLine.appendSwitch("js-flags", `--max-old-space-size=${args.maxMemory || 4096}`);
 
@@ -147,6 +144,9 @@ class Application {
     const enableLogging =
       process.env.NODE_ENV === "development" || process.env.VORTEX_ENABLE_LOGGING === "1";
     setupLogging(app.getPath("userData"), enableLogging);
+
+    // Set up main process extensions IPC handlers after logging is available.
+    setupMainExtensions();
     this.setupAppEvents(args);
   }
 
@@ -304,7 +304,9 @@ class Application {
           });
       } else {
         this.regularStart(args).catch((err: unknown) => {
-          terminate(unknownToError(err));
+          if (!Application.shouldIgnoreError(err)) {
+            void terminateAsync(unknownToError(err));
+          }
         });
       }
     };

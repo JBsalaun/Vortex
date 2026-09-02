@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
-"""Generate and sync Flatpak source manifests for yarn and NuGet inputs."""
+"""Generate and sync Flatpak source manifests for pnpm and NuGet inputs."""
 
 import argparse
+import json
+import os
+import subprocess
+import tempfile
 from pathlib import Path
 from typing import Iterable, List, Optional
 
@@ -20,10 +24,10 @@ from _flatpak_yarn_hash import (
 )
 
 
-DEFAULT_LOCKFILE = "yarn.lock"
-DEFAULT_YARN_OUTPUT = "flatpak/generated-sources.json"
-DEFAULT_YARN_HASH_FILE = "flatpak/generated-sources.hash"
-DEFAULT_NUGET_SEARCH_ROOT = "extensions"
+DEFAULT_LOCKFILE = "pnpm-lock.yaml"
+DEFAULT_PNPM_OUTPUT = "flatpak/generated-sources.json"
+DEFAULT_PNPM_HASH_FILE = "flatpak/generated-sources.hash"
+DEFAULT_NUGET_SEARCH_ROOT = "tools/dotnetprobe"
 DEFAULT_NUGET_OUTPUT = "flatpak/generated-nuget-sources.json"
 DEFAULT_NUGET_HASH_FILE = "flatpak/generated-nuget-sources.hash"
 DEFAULT_DOTNET = "9"
@@ -42,21 +46,100 @@ def generate_sources(
 
     root = repo_root()
 
+    normalized_lockfile = _normalize_pnpm_lockfile(lockfile, info.python_exe)
+
     cmd = [
         str(info.flatpak_node_generator),
-        "yarn",
-        str(lockfile),
+        "pnpm",
+        str(normalized_lockfile),
+        "--pnpm-store-version",
+        "v11",
         "-o",
         str(output),
     ]
-    if recursive:
-        if lockfiles is None:
-            lockfiles = collect_lockfiles(lockfile=lockfile, recursive=True)
-        cmd.append("-r")
-        for lockfile_path in lockfiles:
-            cmd.extend(["-R", str(lockfile_path)])
 
-    run_command(cmd, cwd=root)
+    try:
+        run_command(cmd, cwd=root)
+        _patch_pnpm_v11_store_generator(output)
+    finally:
+        if normalized_lockfile != lockfile:
+            normalized_lockfile.unlink(missing_ok=True)
+
+
+def _patch_pnpm_v11_store_generator(output: Path) -> None:
+    """Fix repeated msgpackr record definitions in the generated v11 store index.
+
+    msgpackr record structures are defined once per encoded value. Subsequent
+    objects with the same shape must use the one-byte structure reference.
+    flatpak-node-generator currently emits a complete record definition for
+    every file, which makes pnpm treat otherwise populated packages as absent.
+    """
+    sources = json.loads(output.read_text(encoding="utf-8"))
+    store_script = next(
+        (
+            source
+            for source in sources
+            if source.get("dest-filename") == "populate_pnpm_store.py"
+        ),
+        None,
+    )
+    if store_script is None:
+        raise RuntimeError("Generated pnpm store population script was not found")
+
+    contents = store_script["contents"]
+    old = """    # Pack file entries as records, build files map as standard msgpack map
+    files_map_bytes = _fixmap(len(files))
+    for fname, finfo in files.items():
+        files_map_bytes += _msgpack_pack(fname) + _record(finfo, 0x41)
+"""
+    new = """    # Define the file-info record once, then use msgpackr's one-byte
+    # structure reference for the remaining entries with the same shape.
+    files_map_bytes = _fixmap(len(files))
+    for index, (fname, finfo) in enumerate(files.items()):
+        file_info = _record(finfo, 0x41) if index == 0 else b'\\x41' + b''.join(
+            _msgpack_pack(value) for value in finfo.values()
+        )
+        files_map_bytes += _msgpack_pack(fname) + file_info
+"""
+    if old not in contents:
+        if new in contents:
+            return
+        raise RuntimeError("The pnpm v11 store generator has an unexpected format")
+
+    store_script["contents"] = contents.replace(old, new, 1)
+    output.write_text(json.dumps(sources, indent=4) + "\n", encoding="utf-8")
+
+
+def _normalize_pnpm_lockfile(lockfile: Path, python_exe: Path) -> Path:
+    if lockfile.read_text(encoding="utf-8").count("\n---\n") == 0:
+        return lockfile
+
+    descriptor, normalized_path = tempfile.mkstemp(suffix=".yaml")
+    os.close(descriptor)
+    normalized = Path(normalized_path)
+    script = """
+import sys
+from pathlib import Path
+import yaml
+
+def merge(left, right):
+    for key, value in right.items():
+        if isinstance(value, dict) and isinstance(left.get(key), dict):
+            merge(left[key], value)
+        else:
+            left[key] = value
+
+documents = list(yaml.safe_load_all(Path(sys.argv[1]).read_text(encoding='utf-8')))
+merged = {}
+for document in documents:
+    merge(merged, document)
+merged.get('packages', {}).pop('node@runtime:24.17.0', None)
+Path(sys.argv[2]).write_text(yaml.safe_dump(merged, sort_keys=False), encoding='utf-8')
+"""
+    subprocess.run(
+        [str(python_exe), "-c", script, str(lockfile), str(normalized)], check=True
+    )
+    return normalized
 
 
 def sync_generated_sources(
@@ -218,7 +301,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     parser.add_argument(
         "--only",
-        choices=("all", "yarn", "nuget"),
+        choices=("all", "pnpm", "nuget"),
         default="all",
         help="Select which source types to sync (default: all)",
     )
@@ -232,7 +315,7 @@ def _build_parser() -> argparse.ArgumentParser:
     nuget_group.add_argument(
         "--search-root",
         default=DEFAULT_NUGET_SEARCH_ROOT,
-        help="Root directory to scan for NuGet dependency changes (default: extensions)",
+        help="Root directory to scan for NuGet dependency changes (default: tools/dotnetprobe)",
     )
     nuget_group.add_argument(
         "--project",
@@ -250,15 +333,15 @@ def _build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = _build_parser().parse_args()
 
-    run_yarn = args.only in {"all", "yarn"}
+    run_pnpm = args.only in {"all", "pnpm"}
     run_nuget = args.only in {"all", "nuget"}
 
-    if run_yarn:
+    if run_pnpm:
         sync_generated_sources(
             lockfile=Path(DEFAULT_LOCKFILE),
-            output=Path(DEFAULT_YARN_OUTPUT),
-            hash_file=Path(DEFAULT_YARN_HASH_FILE),
-            recursive=True,
+            output=Path(DEFAULT_PNPM_OUTPUT),
+            hash_file=Path(DEFAULT_PNPM_HASH_FILE),
+            recursive=False,
             force=args.force,
         )
 

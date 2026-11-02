@@ -7,7 +7,7 @@ import {
   type ChaosRule,
   type FileSystem,
 } from "@vortex/shared/filesystem";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 import { installInMemoryFS } from "../test-utils/fsApi";
 import { GameEntryNotFound } from "../types/IGameStore";
@@ -324,5 +324,57 @@ describe("Steam.allGames", () => {
     const entries = await scanAllGames();
 
     expect(entries[0]?.installData).toBeUndefined();
+  });
+});
+
+describe.skipIf(process.platform !== "linux")("Steam.launchGame on Linux", () => {
+  const openUrl = vi.fn();
+
+  beforeEach(() => {
+    steam.installed = true;
+    openUrl.mockClear();
+    vi.stubGlobal("window", { api: { ...window.api, shell: { openUrl } } });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
+  it.each(["42", 42, { steamAppId: 42 }])(
+    "launches Flatpak games through the host Steam URI: %j",
+    async (appInfo) => {
+      vi.stubEnv("IS_FLATPAK", "true");
+      const store = new Steam();
+      const getExecInfo = vi.spyOn(store, "getExecInfo");
+
+      await store.launchGame(appInfo);
+
+      expect(openUrl).toHaveBeenCalledWith("steam://launch/42/");
+      expect(getExecInfo).not.toHaveBeenCalled();
+    },
+  );
+
+  it("preserves custom Steam launch parameters", async () => {
+    vi.stubEnv("IS_FLATPAK", "true");
+
+    await new Steam().launchGame({ appId: "42", parameters: ["-debug"], launchType: "gamestore" });
+
+    expect(openUrl).toHaveBeenCalledWith("steam://launch/42/-debug");
+  });
+
+  it("keeps executable launches outside Flatpak", async () => {
+    vi.stubEnv("IS_FLATPAK", "false");
+    const store = new Steam();
+    const getExecInfo = vi.spyOn(store, "getExecInfo").mockResolvedValue({
+      execPath: "/usr/bin/steam",
+      arguments: ["-applaunch", "42"],
+    });
+
+    await store.launchGame("42");
+
+    expect(getExecInfo).toHaveBeenCalledWith("42");
+    expect(openUrl).not.toHaveBeenCalled();
   });
 });

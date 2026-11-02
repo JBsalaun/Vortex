@@ -47,7 +47,6 @@ import {
 import { withTrackedActivity } from "../../../util/errorHandling";
 import * as fs from "../../../util/fs";
 import getNormalizeFunc from "../../../util/getNormalizeFunc";
-import { getVolumePath } from "../../../util/getVolumePath";
 import getVortexPath from "../../../util/getVortexPath";
 import { log } from "../../../util/log";
 import { showError } from "../../../util/message";
@@ -69,6 +68,7 @@ import type { IDeploymentMethod } from "../types/IDeploymentMethod";
 import { getSupportedActivators } from "../util/deploymentMethods";
 import { NoDeployment } from "../util/exceptions";
 import getInstallPath, { getInstallPathPattern } from "../util/getInstallPath";
+import { suggestStagingPathForGame } from "../util/suggestStagingPath";
 
 interface IBaseProps {
   activators: IDeploymentMethod[];
@@ -1050,22 +1050,15 @@ class Settings extends ComponentEx<IProps, IComponentState> {
   };
 
   private suggestPath = async () => {
-    const { modPaths, onShowError, suggestInstallPathDirectory } = this.props;
+    const { discovery, modPaths, onShowError, suggestInstallPathDirectory } = this.props;
     try {
-      // stat the volume root rather than the full mod path — the mod directory
-      // may not exist yet (e.g. first-time setup), but we only need the device id
-      const volume = getVolumePath(modPaths[""]);
-      const [modPathStats, userDataStats] = await Promise.all([
-        fs.statAsync(volume),
-        window.api.app.getPath("userData").then((userDataPath) => fs.statAsync(userDataPath)),
-      ]);
-
-      let suggestion: string;
-      if (modPathStats.dev === userDataStats.dev) {
-        suggestion = path.join("{USERDATA}", "{game}", "mods");
-      } else {
-        suggestion = path.join(volume, suggestInstallPathDirectory, "{game}");
-      }
+      const userDataPath = await window.api.app.getPath("userData");
+      const suggestion = await suggestStagingPathForGame(
+        modPaths[""],
+        discovery.path,
+        userDataPath,
+        suggestInstallPathDirectory,
+      );
       this.changePath(suggestion);
     } catch (err) {
       if (err instanceof UserCanceled) {

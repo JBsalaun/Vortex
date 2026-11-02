@@ -35,20 +35,37 @@ const MIN_DISK_SPACE_OFFSET = 512 * 1024 * 1024;
  * @param destination The proposed destination folder.
  */
 export function testPathTransfer(source: string, destination: string): PromiseBB<void> {
-  let destinationRoot: string;
-  try {
-    destinationRoot = getVolumePath(destination);
-  } catch (err) {
-    if (isErrorWithSystemCode(err)) {
-      if (err.systemCode === 2) {
-        return PromiseBB.reject(new NotFound(destination));
+  const destinationRootPromise = PromiseBB.try(async () => {
+    if (process.platform === "win32") {
+      try {
+        return getVolumePath(destination);
+      } catch (err) {
+        if (isErrorWithSystemCode(err) && err.systemCode === 2) {
+          throw new NotFound(destination);
+        }
+        throw err;
       }
     }
 
-    return PromiseBB.reject(err);
-  }
+    let existingPath = destination;
+    while (true) {
+      try {
+        await fs.statAsync(existingPath);
+        return existingPath;
+      } catch (err) {
+        if (getErrorCode(err) !== "ENOENT") {
+          throw err;
+        }
+        const parentPath = path.dirname(existingPath);
+        if (parentPath === existingPath) {
+          throw new NotFound(destination);
+        }
+        existingPath = parentPath;
+      }
+    }
+  });
 
-  const isOnSameVolume = (): PromiseBB<boolean> => {
+  const isOnSameVolume = (destinationRoot: string): PromiseBB<boolean> => {
     return PromiseBB.all([fs.statAsync(source), fs.statAsync(destinationRoot)]).then(
       (stats) => stats[0].dev === stats[1].dev,
     );
@@ -67,42 +84,72 @@ export function testPathTransfer(source: string, destination: string): PromiseBB
   };
 
   let totalNeededBytes = 0;
-  return fs
-    .statAsync(source)
-    .catch((err) => {
-      // We were unable to confirm the existence of the source directory!
-      //  This is a valid use case when the source was a directory on
-      //  a removable drive or network drive that is no longer there, or
-      //  possibly a faulty HDD that was replaced.
-      //  For that reason, we're going to skip disk calculations entirely.
-      log("warn", "Transfer disk space test failed - missing source directory", err);
-      return PromiseBB.reject(new ProcessCanceled("Missing source directory"));
-    })
-    .then(() => isOnSameVolume())
-    .then((res) =>
-      res
-        ? PromiseBB.reject(new ProcessCanceled("Disk space calculations are unnecessary."))
-        : calculate(source),
-    )
-    .then((totalSize) => {
-      totalNeededBytes = totalSize;
-      try {
-        const stats = nodeFs.statfsSync(destinationRoot);
-        return PromiseBB.resolve({ free: stats.bavail * stats.bsize });
-      } catch (err) {
-        // don't report an error just because this check failed
-        return PromiseBB.resolve({ free: Number.MAX_VALUE });
-      }
-    })
-    .then((res) =>
-      totalNeededBytes < res.free - MIN_DISK_SPACE_OFFSET
-        ? PromiseBB.resolve()
-        : PromiseBB.reject(new InsufficientDiskSpace(destinationRoot)),
+  return destinationRootPromise
+    .then((destinationRoot) =>
+      fs
+        .statAsync(source)
+        .catch((err) => {
+          // We were unable to confirm the existence of the source directory!
+          //  This is a valid use case when the source was a directory on
+          //  a removable drive or network drive that is no longer there, or
+          //  possibly a faulty HDD that was replaced.
+          //  For that reason, we're going to skip disk calculations entirely.
+          log("warn", "Transfer disk space test failed - missing source directory", err);
+          return PromiseBB.reject(new ProcessCanceled("Missing source directory"));
+        })
+        .then(() => isOnSameVolume(destinationRoot))
+        .then((res) =>
+          res
+            ? PromiseBB.reject(new ProcessCanceled("Disk space calculations are unnecessary."))
+            : calculate(source),
+        )
+        .then((totalSize) => {
+          totalNeededBytes = totalSize;
+          try {
+            const stats = nodeFs.statfsSync(destinationRoot);
+            return PromiseBB.resolve({ free: stats.bavail * stats.bsize });
+          } catch (err) {
+            // don't report an error just because this check failed
+            return PromiseBB.resolve({ free: Number.MAX_VALUE });
+          }
+        })
+        .then((res) =>
+          totalNeededBytes < res.free - MIN_DISK_SPACE_OFFSET
+            ? PromiseBB.resolve()
+            : PromiseBB.reject(new InsufficientDiskSpace(destinationRoot)),
+        ),
     )
     .catch(ProcessCanceled, () => PromiseBB.resolve());
 }
 
 export type ProgressCallback = (from: string, to: string, percentage: number) => void;
+
+function copyFileVerified(
+  sourcePath: string,
+  destinationPath: string,
+  options?: Parameters<typeof fs.copyAsync>[2],
+): PromiseBB<void> {
+  return fs
+    .copyAsync(sourcePath, destinationPath, options)
+    .then(() => PromiseBB.all([fs.statAsync(sourcePath), fs.statAsync(destinationPath)]))
+    .then(([sourceStats, destinationStats]) => {
+      if (sourceStats.size !== destinationStats.size) {
+        const verificationError = new Error("Copied file size does not match source");
+        Object.assign(verificationError, { code: "EIO", path: destinationPath });
+        return PromiseBB.reject(verificationError);
+      }
+    });
+}
+
+export function moveFile(sourcePath: string, destinationPath: string): PromiseBB<void> {
+  return fs.renameAsync(sourcePath, destinationPath).catch((err) => {
+    if (getErrorCode(err) !== "EXDEV") {
+      return PromiseBB.reject(err);
+    }
+
+    return copyFileVerified(sourcePath, destinationPath).then(() => fs.removeAsync(sourcePath));
+  });
+}
 
 /**
  * Move the content of a directory to another - Using a move operation if it's on the same
@@ -117,7 +164,7 @@ export function transferPath(
   dest: string,
   progress: ProgressCallback,
 ): PromiseBB<void> {
-  let func = fs.copyAsync;
+  let func = copyFileVerified;
 
   let completed: number = 0;
   let count: number = 0;
@@ -159,7 +206,7 @@ export function transferPath(
       ),
     )
     .then((sameVolume: boolean) => {
-      func = sameVolume ? linkFile : fs.copyAsync;
+      func = sameVolume ? linkFile : copyFileVerified;
       return PromiseBB.resolve();
     })
     .then(() =>
@@ -224,7 +271,7 @@ export function transferPath(
                         //  come on...
                         const code = getErrorCode(err);
                         if (code && ["EXDEV", "ENOTSUP", "EISDIR"].indexOf(code) !== -1) {
-                          func = fs.copyAsync;
+                          func = copyFileVerified;
                           return func(sourcePath, destPath, {
                             showDialogCallback,
                           });

@@ -22,6 +22,7 @@ import type {
   IDeploymentMethod,
   IUnavailableReason,
 } from "../mod_management/types/IDeploymentMethod";
+import { existingPathSync } from "../mod_management/util/existingPath";
 
 export class FileFound extends Error {
   constructor(name: string) {
@@ -84,7 +85,7 @@ class DeploymentMethod extends LinkingDeployment {
     }
 
     try {
-      fs.accessSync(modPaths[typeId], fs.constants.W_OK);
+      fs.accessSync(existingPathSync(modPaths[typeId]), fs.constants.W_OK);
     } catch {
       log("info", "hardlink deployment not supported due to lack of write access", {
         typeId,
@@ -109,7 +110,9 @@ class DeploymentMethod extends LinkingDeployment {
     const installationPath = installPathForGame(state, gameId);
 
     try {
-      if (fs.statSync(installationPath).dev !== fs.statSync(modPaths[typeId]).dev) {
+      if (
+        fs.statSync(installationPath).dev !== fs.statSync(existingPathSync(modPaths[typeId])).dev
+      ) {
         // hard links work only on the same drive
         return {
           description: (t) => t("Works only if mods are installed on the same drive as the game."),

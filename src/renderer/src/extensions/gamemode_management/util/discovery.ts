@@ -19,13 +19,14 @@ import extractExeIcon from "../../../util/exeIcon";
 import * as fs from "../../../util/fs";
 import type { Normalize } from "../../../util/getNormalizeFunc";
 import getNormalizeFunc from "../../../util/getNormalizeFunc";
-import { getVolumePath } from "../../../util/getVolumePath";
 import getVortexPath from "../../../util/getVortexPath";
 import StarterInfo from "../../../util/StarterInfo";
 import { getSafe } from "../../../util/storeHelper";
 import * as storeLookup from "../../../util/storeLookup";
 import { truthy } from "../../../util/util";
 import { modPathsForGame } from "../../mod_management/selectors";
+import { suggestStagingPathForGame } from "../../mod_management/util/suggestStagingPath";
+import { discoveryByGame } from "../selectors";
 import type { IDiscoveryResult } from "../types/IDiscoveryResult";
 import type { IToolStored } from "../types/IToolStored";
 import { getGameStores, getGameStoresSafe } from "./getGame";
@@ -706,36 +707,12 @@ export function searchDiscovery(
 
 export async function suggestStagingPath(api: IExtensionApi, gameId: string): Promise<string> {
   const state = api.getState();
+  const discovery = discoveryByGame(state, gameId);
   const modPaths = modPathsForGame(state, gameId);
-
-  let statModPath: fs.Stats;
-
-  const idModPath = async (testPath: string) => {
-    try {
-      statModPath = await fs.statAsync(testPath);
-    } catch (err) {
-      const code = getErrorCode(err);
-      if (code === "ENOENT") {
-        await idModPath(path.dirname(testPath));
-      } else {
-        throw err;
-      }
-    }
-  };
-
-  await idModPath(modPaths[""]);
-  const statUserData = await fs.statAsync(getVortexPath("userData"));
-
-  let suggestion: string;
-
-  if (statModPath.dev === statUserData.dev) {
-    // main mod folder is on same drive as userdata, use a subdirectory below that
-    suggestion = path.join("{USERDATA}", "{game}", "mods");
-  } else {
-    // different drives, suggest path on same drive
-    const volume = getVolumePath(modPaths[""]);
-    suggestion = path.join(volume, state.settings.mods.suggestInstallPathDirectory, "{game}");
-  }
-
-  return suggestion;
+  return suggestStagingPathForGame(
+    modPaths[""],
+    discovery.path,
+    getVortexPath("userData"),
+    state.settings.mods.suggestInstallPathDirectory,
+  );
 }

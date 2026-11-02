@@ -69,6 +69,7 @@ finish-args:
   - --talk-name=org.freedesktop.Flatpak
   # Runtime: .NET runtime location for framework-dependent tools
   - --env=DOTNET_ROOT=/app/lib/dotnet
+  - --env=LD_LIBRARY_PATH=/app/lib
   # Integration: disable internal updater (Flatpak handles updates)
   - --env=IGNORE_UPDATES=yes
   - --env=IS_FLATPAK=true
@@ -150,27 +151,21 @@ modules:
         delete pkg.dependencies.node;
         delete pkg.devEngines.runtime;
         delete pkg.engines.node;
+        delete pkg.engines.runtime;
         fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
 
         let lock = fs.readFileSync('pnpm-lock.yaml', 'utf8');
-        lock = lock.replace(/^      node:\n        specifier: 'catalog:'\n        version: runtime:24\.17\.0\n/m, '');
-        const start = lock.indexOf('\n  node@runtime:24.17.0:\n');
-        if (start !== -1) {
-          const next = lock.slice(start + 1).search(/\n  \S/);
-          const end = next === -1 ? lock.length : start + 1 + next;
-          lock = lock.slice(0, start) + lock.slice(end);
-        }
-        lock = lock.replace(/^  node@runtime:24\.17\.0: \{\}\n/m, '');
+        lock = lock.replace(/^      node:\n        specifier: [^\n]+\n        version: runtime:[^\n]+\n/gm, '');
+        lock = lock.replace(/^  node@runtime:[^\n]+:\n(?: {4}.*\n|\n)*/gm, '');
+        lock = lock.replace(/^  node@runtime:[^\n]+: \{\}\n/gm, '');
         fs.writeFileSync('pnpm-lock.yaml', lock);
         NODE
       - VORTEX_ELECTRON_REBUILD=defer node flatpak-node/pnpm/bin/pnpm.cjs install --offline --frozen-lockfile --trust-lockfile --store-dir="$PWD/flatpak-node/pnpm-store"
-      - PATH="$PWD/node_modules/.pnpm/node_modules/.bin:$PATH" node "$(find node_modules/.pnpm -path '*/@nexusmods/fomod-installer-native/install.js' -print -quit)"
-      # font-scanner has no install script; pnpm's implicit node-gyp build did not run in the sandbox.
+      # The theme extension bundles font-scanner's native module during its build.
       - |
         pnpm_bin="$PWD/node_modules/.pnpm/node_modules/.bin"
         font_scanner_dir="$(dirname "$(find node_modules/.pnpm -path '*/font-scanner@*/node_modules/font-scanner/binding.gyp' -print -quit)")"
         cd "$font_scanner_dir" && PATH="$pnpm_bin:$PATH" node-gyp rebuild
-      - node "$(find node_modules/.pnpm -path '*/@electron/rebuild/lib/cli.js' -print -quit)"
       # Build the app following the standard workflow from CONTRIBUTING.md.
       - pnpm run build
 
@@ -184,11 +179,20 @@ modules:
             VORTEX_ELECTRON_REBUILD=skip \
           pnpm --store-dir=/run/build/vortex/flatpak-node/pnpm-store \
             --offline --frozen-lockfile --trust-lockfile -F @vortex/main deploy ./dist
-        node ./dist/prepare-dist-package.mjs
+        # Build native libraries in the deployed tree so packaging retains them.
+        cd dist
+        pnpm_bin="$PWD/node_modules/.bin"
+        PATH="$pnpm_bin:$PATH" node node_modules/@nexusmods/fomod-installer-native/install.js
+        # winapi-bindings exports a JavaScript stub on Linux; rebuild Linux addons only.
+        pnpm exec electron-rebuild --only @nexusmods/fomod-installer-native,@parcel/watcher,drivelist,leveldown,xxhash-addon
+        node ./prepare-dist-package.mjs
 
       # Build Electron distribution with electron-builder (dir target)
       # The shared electron-builder config writes to the repository dist/ folder.
       - cd src/main/dist && pnpm exec electron-builder --config electron-builder.config.json --publish never --linux dir
+
+      # FOMOD's native addon links this companion library by name.
+      - install -Dm755 src/main/dist/node_modules/@nexusmods/fomod-installer-native/ModInstaller.Native.so /app/lib/ModInstaller.Native.so
 
       # Install the launcher, desktop file, icon, and metainfo into the Flatpak image.
       - install -Dm755 flatpak/run.sh /app/bin/run.sh

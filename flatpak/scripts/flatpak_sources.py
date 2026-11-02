@@ -133,7 +133,16 @@ documents = list(yaml.safe_load_all(Path(sys.argv[1]).read_text(encoding='utf-8'
 merged = {}
 for document in documents:
     merge(merged, document)
-merged.get('packages', {}).pop('node@runtime:24.17.0', None)
+# Flatpak supplies Node through its SDK; pnpm runtime entries are not npm tarballs.
+for section in ('packages', 'snapshots'):
+    entries = merged.get(section, {})
+    for key in list(entries):
+        if key.startswith('node@runtime:'):
+            del entries[key]
+for importer in merged.get('importers', {}).values():
+    dependencies = importer.get('dependencies', {})
+    if str(dependencies.get('node', {}).get('version', '')).startswith('runtime:'):
+        del dependencies['node']
 Path(sys.argv[2]).write_text(yaml.safe_dump(merged, sort_keys=False), encoding='utf-8')
 """
     subprocess.run(

@@ -1,11 +1,12 @@
 import { fireEvent, render, renderHook, screen } from "@testing-library/react";
 import React from "react";
 import type * as ReactReduxTypes from "react-redux";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { IActionDefinition } from "@/types/IActionDefinition";
+import type { IActionDefinition, IActionOptions } from "@/types/IActionDefinition";
 
-const { getState, objects } = vi.hoisted(() => ({
+const { dispatch, getState, objects } = vi.hoisted(() => ({
+  dispatch: vi.fn(),
   getState: vi.fn(() => ({})),
   objects: { current: [] as IActionDefinition[] },
 }));
@@ -38,9 +39,9 @@ vi.mock("@/ExtensionProvider", async (importOriginal) => ({
 
 const state = {
   settings: {
-    mods: { activator: {}, confirmPurge: true },
+    mods: { activator: {}, confirmPurge: true, betaTable: false },
     downloads: { copyOnIFF: false },
-    automation: { install: false },
+    automation: { install: false, deploy: false },
   },
   session: { discovery: {} },
   persistent: { mods: {} },
@@ -51,7 +52,7 @@ vi.mock("react-redux", async () => {
 
   return {
     ...actual,
-    useDispatch: () => vi.fn(),
+    useDispatch: () => dispatch,
     useSelector: (selector: (input: unknown) => unknown) => {
       try {
         return selector(state);
@@ -64,6 +65,8 @@ vi.mock("react-redux", async () => {
   };
 });
 
+import { setAutoDeployment } from "../../settings_interface/actions/automation";
+import { setBetaModsTable } from "../actions/settings";
 import { useModToolbarActions } from "./useModToolbarActions.hook";
 
 const t = ((key: string) => key) as never;
@@ -124,7 +127,7 @@ describe("useModToolbarActions", () => {
       options: {},
     } as unknown as IActionDefinition;
 
-    expect(labels([asComponent])).toHaveLength(4);
+    expect(labels([asComponent])).toEqual(labels([]));
   });
 });
 
@@ -196,5 +199,197 @@ describe("useModToolbarActions tracking identity", () => {
     expect(onActionClick).not.toHaveBeenCalled();
     expect(only?.id).toBe("Open Mod Folder");
     expect(only?.extension).toBe("open-directory");
+  });
+});
+describe("useModToolbarActions brands", () => {
+  // Unresolved mod conflicts reach the bar as a brand on Manage Rules, so colour says
+  // there is something waiting without the user hovering for the tooltip.
+  it("takes the brand an action asks for", () => {
+    const branded = plain("Manage Rules", { brand: () => "info" });
+
+    expect(byLabel([branded], "Manage Rules")?.brand).toBe("info");
+  });
+
+  it("leaves an action that asks for nothing the default brand", () => {
+    expect(byLabel([plain("Manage Rules")], "Manage Rules")?.brand).toBeUndefined();
+  });
+
+  // The two are separate props: something to say is not a reason to change colour, and
+  // an action can do either on its own.
+  it("keeps a notice from branding the action", () => {
+    const withNotice = plain("Manage Rules", { notice: () => "2 unresolved conflicts" });
+    const action = byLabel([withNotice], "Manage Rules (2 unresolved conflicts)");
+
+    expect(action?.brand).toBeUndefined();
+  });
+
+  it("keeps a brand from adding to the label", () => {
+    expect(labels([plain("Manage Rules", { brand: () => "info" })])).toContain("Manage Rules");
+  });
+
+  // Read on render, so a resolved conflict has to take the colour with it.
+  it("drops the brand once the action stops asking for it", () => {
+    const brand = vi.fn(() => "info" as ReturnType<NonNullable<IActionOptions["brand"]>>);
+    const branded = plain("Manage Rules", { brand });
+
+    expect(byLabel([branded], "Manage Rules")?.brand).toBe("info");
+
+    brand.mockReturnValue(undefined);
+
+    expect(byLabel([branded], "Manage Rules")?.brand).toBeUndefined();
+  });
+});
+
+describe("useModToolbarActions manual apply", () => {
+  const deployAction = () => actionsFor([]).find((action) => action.id === "deploy");
+
+  const setModActivity = (activity: string[] | undefined) => {
+    (state.session as { base?: unknown }).base =
+      activity === undefined ? undefined : { activity: { mods: activity } };
+  };
+
+  /** Gives the fixture an active game with changes waiting to deploy, or takes it away. */
+  const setPending = (pending: boolean) => {
+    const settings = state.settings as { profiles?: unknown };
+    const persistent = state.persistent as { profiles?: unknown; deployment?: unknown };
+    settings.profiles = pending ? { activeProfileId: "p1" } : undefined;
+    persistent.profiles = pending ? { p1: { id: "p1", gameId: "skyrimse" } } : undefined;
+    persistent.deployment = pending ? { needToDeploy: { skyrimse: true } } : undefined;
+  };
+
+  afterEach(() => {
+    setModActivity(undefined);
+    setPending(false);
+  });
+
+  it("is unpinned and shows the Apply button's symbol", () => {
+    expect(deployAction()?.pinned).toBeFalsy();
+    expect(deployAction()?.icon).toBe("autorenew");
+  });
+
+  it("says it applies even without detected changes", () => {
+    setModActivity([]);
+
+    const action = deployAction();
+
+    expect(action).toMatchObject({
+      label: "Manual apply (Deploy)",
+      description: "Apply mods, even when no changes are detected.",
+    });
+    expect(action?.disabled).toBeFalsy();
+  });
+
+  it("stays neutral while changes are waiting", () => {
+    setPending(true);
+    setModActivity([]);
+    expect(deployAction()?.brand).toBeUndefined();
+  });
+
+  it.each(["deployment", "deployment_pending"])("is disabled and says so while %s", (activity) => {
+    setPending(true);
+    setModActivity([activity]);
+
+    const action = deployAction();
+
+    expect(action).toMatchObject({ disabled: true, label: "Applying mod changes…" });
+    expect(action?.description).toBeUndefined();
+    expect(action?.brand).toBeUndefined();
+  });
+});
+
+describe("useModToolbarActions auto-apply", () => {
+  afterEach(() => {
+    state.settings.automation.deploy = false;
+    dispatch.mockClear();
+  });
+
+  const autoApply = () => actionsFor([]).find((action) => action.id === "auto-apply");
+
+  it("comes just before the view switch, unpinned, in a section of its own", () => {
+    const actions = actionsFor([plain("Manage Rules")]);
+
+    expect(actions.at(-2)).toMatchObject({ id: "auto-apply", section: "automation" });
+    expect(actions.at(-1)?.section).not.toBe("automation");
+    expect(actions.at(-3)?.section).not.toBe("automation");
+    expect(autoApply()?.pinned).toBeFalsy();
+  });
+
+  it("shows the rule settings symbol", () => {
+    expect(autoApply()?.icon).toBe("rule_settings");
+  });
+
+  it("offers to turn auto-apply on while it's off", () => {
+    expect(autoApply()).toMatchObject({
+      label: "Enable auto-apply",
+      description: "Automatically apply changes as you make them.",
+      active: false,
+      trackingProperties: { autoApply: true },
+    });
+
+    autoApply()?.onClick?.();
+
+    expect(dispatch).toHaveBeenCalledWith(setAutoDeployment(true));
+  });
+
+  it("offers to turn auto-apply off, lit, while it's on", () => {
+    state.settings.automation.deploy = true;
+
+    expect(autoApply()).toMatchObject({
+      label: "Disable auto-apply",
+      description: "Mod changes will need to be applied manually.",
+      active: true,
+      trackingProperties: { autoApply: false },
+    });
+
+    autoApply()?.onClick?.();
+
+    expect(dispatch).toHaveBeenCalledWith(setAutoDeployment(false));
+  });
+});
+
+describe("useModToolbarActions beta table", () => {
+  afterEach(() => {
+    state.settings.mods.betaTable = false;
+    dispatch.mockClear();
+  });
+
+  const betaTable = () => actionsFor([]).find((action) => action.id === "beta-table");
+
+  it("comes last, pinned, in a section of its own", () => {
+    const actions = actionsFor([plain("Manage Rules")]);
+
+    expect(actions.at(-1)).toMatchObject({ id: "beta-table", pinned: true, section: "view" });
+  });
+
+  it("shows the experiment flask", () => {
+    expect(betaTable()?.icon).toBe("experiment");
+  });
+
+  it("offers the beta view while the classic one shows", () => {
+    expect(betaTable()).toMatchObject({
+      label: "Switch to beta view",
+      description: "Try the new mod list. Some features aren't supported yet.",
+      active: false,
+      trackingProperties: { view: "beta" },
+    });
+
+    betaTable()?.onClick?.();
+
+    expect(dispatch).toHaveBeenCalledWith(setBetaModsTable(true));
+  });
+
+  it("offers the classic view, lit, while the beta one shows", () => {
+    state.settings.mods.betaTable = true;
+
+    expect(betaTable()).toMatchObject({
+      label: "Switch to classic view",
+      description: "Return to the original mod list.",
+      active: true,
+      trackingProperties: { view: "classic" },
+    });
+
+    betaTable()?.onClick?.();
+
+    expect(dispatch).toHaveBeenCalledWith(setBetaModsTable(false));
   });
 });

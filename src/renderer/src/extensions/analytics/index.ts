@@ -6,8 +6,10 @@ import type { IExtensionContext } from "@/types/IExtensionContext";
 import { toUpdateChannel } from "@/types/IState";
 import { getCPUArch } from "@/util/nativeArch";
 
+import { isHidpiDisplay } from "../../contexts/WindowContext";
 import { activeGameId, activeProfileId } from "../../util/selectors";
 import { nexusGamesProm } from "../nexus_integration/util";
+import { zoomFromState } from "../settings_interface/utils/zoom";
 import { setAnalytics } from "./actions/analytics.action";
 import { HELP_ARTICLE, PRIVACY_POLICY } from "./constants";
 import AnalyticsMixpanel from "./mixpanel/MixpanelAnalytics";
@@ -15,13 +17,16 @@ import type { MixpanelEvent } from "./mixpanel/MixpanelEvents";
 import { AppLaunchedEvent, AppUIModeChangedEvent } from "./mixpanel/MixpanelEvents";
 import { numericNexusGameId } from "./mixpanel/numericGameId";
 import settingsReducer from "./reducers/settings.reducer";
+import telemetryReducer from "./reducers/telemetry.reducer";
 import { analyticsLog } from "./utils/analyticsLog";
+import { emitStoreGameVersions } from "./utils/storeGameVersionEvent";
 import SettingsAnalytics from "./views/SettingsAnalytics";
 
 let ignoreNextAnalyticsStateChange = false;
 
 function init(context: IExtensionContext): boolean {
   context.registerReducer(["settings", "analytics"], settingsReducer);
+  context.registerReducer(["persistent", "analyticsTelemetry"], telemetryReducer);
   context.registerSettings("Vortex", SettingsAnalytics, undefined, undefined, 110);
 
   context.once(() => {
@@ -29,6 +34,8 @@ function init(context: IExtensionContext): boolean {
     const getUserInfo = () => context.api.store.getState().persistent.nexus.userInfo;
     // `?? true` because state persisted before the setting existed has no value for it.
     const isLegacyUI = () => !(context.api.getState().settings.window.useModernLayout ?? true);
+    const modsTableView = () =>
+      context.api.getState().settings.mods?.betaTable === true ? "beta" : "classic";
 
     // check for update when the user changes the analytics, toggle
     const analyticsSettings = ["settings", "analytics", "enabled"];
@@ -79,6 +86,16 @@ function init(context: IExtensionContext): boolean {
     // and would otherwise report itself as a switch the user never made.
     context.api.events.on("analytics-track-ui-mode-changed", (isLegacy: boolean) => {
       AnalyticsMixpanel.trackEvent(new AppUIModeChangedEvent({ is_legacy_ui: isLegacy }));
+    });
+
+    // Store install version telemetry; the per-game change gates make it cheap on deploys that changed nothing.
+    // Fire and forget: the event must never delay or fail the deployment chain.
+    context.api.onAsync("did-deploy", async () => {
+      void emitStoreGameVersions(context.api).catch((err) =>
+        analyticsLog("warn", "store-game-version emit failed", {
+          error: getErrorMessageOrDefault(err),
+        }),
+      );
     });
 
     // Keep the active-game super properties in sync so every event carries game scope.
@@ -143,6 +160,9 @@ function init(context: IExtensionContext): boolean {
             isLegacyUI(), // UI mode (true when running the legacy/classic UI)
             // normalised so a stale retired channel never reaches Mixpanel
             toUpdateChannel(context.api.getState().settings.update.channel), // population for the update funnel
+            Math.round(zoomFromState(context.api.getState()) * 100), // zoom level this session runs at
+            isHidpiDisplay(), // whether this session's display is above the HiDPI threshold
+            modsTableView(), // which Mods table, classic or the new one in beta, this session opens on
           ),
         );
 

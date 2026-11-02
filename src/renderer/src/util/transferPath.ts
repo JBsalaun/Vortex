@@ -5,7 +5,6 @@ import { getErrorCode, isErrorWithSystemCode, unknownToError } from "@vortex/sha
 import PromiseBB from "bluebird";
 import type { IEntry } from "turbowalk";
 import turbowalk from "turbowalk";
-import * as winapi from "winapi-bindings";
 
 import { DOWNLOADS_DIR_TAG } from "../extensions/download_management/util/downloadDirectory";
 import { STAGING_DIR_TAG } from "../extensions/mod_management/stagingDirectory";
@@ -19,6 +18,7 @@ import {
 import * as fs from "./fs";
 import type { Normalize } from "./getNormalizeFunc";
 import getNormalizeFunc from "./getNormalizeFunc";
+import { getVolumePath } from "./getVolumePath";
 import { log } from "./log";
 import { isChildPath } from "./util";
 
@@ -38,7 +38,7 @@ export function testPathTransfer(source: string, destination: string): PromiseBB
   const destinationRootPromise = PromiseBB.try(async () => {
     if (process.platform === "win32") {
       try {
-        return winapi.GetVolumePathName(destination);
+        return getVolumePath(destination);
       } catch (err) {
         if (isErrorWithSystemCode(err) && err.systemCode === 2) {
           throw new NotFound(destination);

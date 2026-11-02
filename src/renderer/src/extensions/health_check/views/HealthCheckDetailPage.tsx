@@ -1,4 +1,3 @@
-import { mdiArrowLeft } from "@mdi/js";
 import React, { useEffect, useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { useSelector } from "react-redux";
@@ -54,7 +53,7 @@ const BackButton = ({ onBack }: { onBack: () => void }) => {
     <Button
       appearance="weak"
       brand="neutral"
-      leftIconPath={mdiArrowLeft}
+      leftIcon="arrow_back"
       onClick={() => {
         trackBackClicked({ time_spent_on_detail_ms: Date.now() - openedAtRef.current });
         onBack();
@@ -113,18 +112,18 @@ function HealthCheckDetailPage({
       <IssueProvider entry={shownEntry}>
         <Page active={active} id="health-check-detail-page" scrollable={false}>
           <PageHeader
-            customTitle={(scrolled) => (
+            customTitle={(compact) => (
               <div className="flex items-center gap-x-1.5">
                 <Typography
-                  appearance={scrolled ? "subdued" : "moderate"}
+                  appearance={compact ? "subdued" : "moderate"}
                   as="h2"
-                  className="transition-colors"
-                  typographyType="heading-xs"
+                  className="font-medium transition-colors"
+                  typographyType="body-xl"
                 >
                   {t(`detail::title::${shownEntry.severity}`)}
                 </Typography>
 
-                <BetaBadge isSubdued={scrolled} />
+                <BetaBadge isSubdued={compact} />
               </div>
             )}
             pictogramName="health-check"

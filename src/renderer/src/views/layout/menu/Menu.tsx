@@ -1,0 +1,104 @@
+import React, { useState, type FC, useRef, useEffect } from "react";
+import { useTranslation } from "react-i18next";
+import { useDispatch } from "react-redux";
+
+import { setOpenMainPage } from "@/actions";
+import { usePagesContext, useWindowContext } from "@/contexts";
+import { TooltipDelayGroup } from "@/ui/components/tooltip/TooltipDelayGroup";
+import { joinClasses } from "@/ui/utils/joinClasses";
+import { getIcon } from "@/views/components/icon_map/iconMap";
+import { useSpineContext } from "@/views/components/Spine/SpineContext";
+
+import { DownloadsMenuContent } from "./components/DownloadsMenuContent";
+import { GameActions } from "./components/game_actions/GameActions";
+import { MenuButton } from "./components/MenuButton";
+import { ToolsProvider, useToolsContext } from "./context/ToolsContext";
+
+const toolPadding = {
+  1: "pb-32",
+  2: "pb-42",
+  3: "pb-52",
+  4: "pb-62",
+  5: "pb-72",
+};
+
+const MenuContent: FC<React.PropsWithChildren<unknown>> = () => {
+  const { t } = useTranslation();
+  const { menuIsCollapsed } = useWindowContext();
+  const { selection, visiblePages } = useSpineContext();
+  const dispatch = useDispatch();
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  const { mainPage } = usePagesContext();
+  const { visibleTools } = useToolsContext();
+  const toolCount = visibleTools.length;
+  const [canScrollUp, setCanScrollUp] = useState(false);
+
+  const onScroll = (event: Event) => setCanScrollUp((event.target as HTMLDivElement).scrollTop > 0);
+
+  useEffect(() => {
+    if (!scrollRef.current) {
+      return;
+    }
+
+    const element = scrollRef.current;
+    element.addEventListener("scroll", onScroll);
+    return () => element.removeEventListener("scroll", onScroll);
+  }, [scrollRef]);
+
+  return (
+    <TooltipDelayGroup
+      as="div"
+      className={joinClasses([
+        "relative -mt-1 flex shrink-0 flex-col pr-0.5 transition-[width]",
+        menuIsCollapsed ? "w-16" : "w-55.5",
+      ])}
+    >
+      <div
+        className={joinClasses(["mr-1 min-h-0 w-full overflow-y-auto pl-3 scroll-fade"], {
+          "scroll-fade-top": canScrollUp,
+        })}
+        ref={scrollRef}
+      >
+        <div
+          className={joinClasses([
+            "flex flex-col gap-y-0.5 pt-1 transition-[width]",
+            menuIsCollapsed ? `w-10 ${toolPadding[toolCount]}` : "w-49 pb-34",
+          ])}
+        >
+          {selection.type === "downloads" ? (
+            <DownloadsMenuContent />
+          ) : (
+            visiblePages.map((page) => (
+              <MenuButton
+                icon={page.menuIcon ?? getIcon(page.icon)}
+                Badge={page.menuBadge}
+                isActive={mainPage === page.id}
+                key={page.id}
+                onClick={() => {
+                  if (mainPage === page.id) {
+                    page.onReset?.();
+                  } else {
+                    dispatch(setOpenMainPage(page.id, false));
+                  }
+                }}
+              >
+                {t(page.title, { ns: page.namespace })}
+              </MenuButton>
+            ))
+          )}
+        </div>
+      </div>
+
+      <GameActions />
+    </TooltipDelayGroup>
+  );
+};
+
+export const Menu: FC<React.PropsWithChildren<unknown>> = () => {
+  return (
+    <ToolsProvider>
+      <MenuContent />
+    </ToolsProvider>
+  );
+};

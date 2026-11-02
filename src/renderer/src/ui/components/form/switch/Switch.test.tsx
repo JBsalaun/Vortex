@@ -18,6 +18,15 @@ describe("Switch", () => {
     expect(getSwitch()).toBeChecked();
   });
 
+  it("reports a change under way as busy, and ignores clicks until it's done", async () => {
+    const onChange = vi.fn();
+    render(<Switch isLoading aria-label="Setting" checked={true} onChange={onChange} />);
+
+    expect(getSwitch()).toHaveAttribute("aria-busy", "true");
+    await userEvent.click(getSwitch());
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
   it("reports semi-on as partially checked (aria mixed)", () => {
     render(<Switch aria-label="Setting" indeterminate={true} onChange={() => undefined} />);
     expect(getSwitch()).toBePartiallyChecked();
@@ -57,7 +66,7 @@ describe("Switch", () => {
     expect(track()).toHaveAttribute("data-checked");
     expect(track()).not.toHaveAttribute("data-indeterminate");
 
-    rerender(<Switch aria-label="Setting" indeterminate={true} />);
+    rerender(<Switch aria-label="Setting" checked={false} indeterminate={true} />);
     expect(track()).toHaveAttribute("data-indeterminate");
   });
 

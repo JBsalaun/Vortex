@@ -1,10 +1,11 @@
 export * from "./constants";
 export * from "./Debouncer";
 export * from "./errors";
-export * from "./error-serialization";
+export * from "./types/ids";
+export * from "./types/stagingFolders";
 export * from "./types/logging";
 
-export { VortexError } from "./errors/base";
+export { CAUSE_SEPARATOR, VortexError } from "./errors/base";
 export type {
   VortexErrorData,
   VortexErrorKind,

@@ -1,7 +1,3 @@
-import * as path from "path";
-import { pathToFileURL } from "url";
-
-import type PromiseBB from "bluebird";
 import type { TFunction } from "i18next";
 import * as React from "react";
 import { ListGroupItem, Media } from "react-bootstrap";
@@ -16,12 +12,15 @@ import { Tooltip } from "@/ui/components/tooltip/Tooltip";
 
 import { ComponentEx } from "../../../controls/ComponentEx";
 import IconBar from "../../../controls/IconBar";
-import { gameTileImageURL } from "../../../extensions/nexus_integration/util/gameTileImageURL";
 import type { IActionDefinition } from "../../../types/IActionDefinition";
 import opn from "../../../util/opn";
 import type { IMod } from "../../mod_management/types/IMod";
+import { setGameAddOrigin } from "../actions/session";
+import { TierZeroRowBadge } from "../components/TierZeroIndicator";
+import type { GameSource } from "../types/GameSource";
 import type { IDiscoveryResult } from "../types/IDiscoveryResult";
 import type { IGameStored } from "../types/IGameStored";
+import { gameArtURL } from "../util/gameArtURL";
 import GameInfoPopover from "./GameInfoPopover";
 
 export interface IProps {
@@ -31,8 +30,10 @@ export interface IProps {
   mods?: { [modId: string]: IMod };
   active: boolean;
   type: string;
-  onRefreshGameInfo: (gameId: string) => PromiseBB<void>;
-  onBrowseGameLocation: (gameId: string) => PromiseBB<void>;
+  /** Which Games page list the row is in, recorded for the app_game_manage event. */
+  source?: GameSource;
+  onRefreshGameInfo: (gameId: string) => PromiseLike<void>;
+  onBrowseGameLocation: (gameId: string) => PromiseLike<void>;
 }
 
 /**
@@ -48,15 +49,7 @@ class GameRow extends ComponentEx<IProps, {}> {
       return null;
     }
 
-    // Prefer the Nexus "tile" art so it matches the website. Fall back to a
-    // local extension logo / imageURL when no Nexus tile can be resolved.
-    let logoPath: string | undefined = gameTileImageURL(game);
-    if (logoPath == null) {
-      logoPath =
-        game.extensionPath !== undefined && game.logo !== undefined
-          ? path.join(game.extensionPath, game.logo)
-          : game.imageURL;
-    }
+    const imgurl = gameArtURL(game);
 
     const location =
       discovery !== undefined && discovery.path !== undefined ? (
@@ -71,20 +64,8 @@ class GameRow extends ComponentEx<IProps, {}> {
       classes.push("game-list-undiscovered");
     }
 
-    let imgurl = null;
-    if (logoPath != null) {
-      let protocol = null;
-      try {
-        protocol = new URL(logoPath)?.protocol;
-      } catch {
-        // not a URL, treat as file path
-      }
-      imgurl =
-        protocol != null && protocol.startsWith("http") ? logoPath : pathToFileURL(logoPath).href;
-    }
-
     return (
-      <ListGroupItem className={classes.join(" ")}>
+      <ListGroupItem className={classes.join(" ")} onClickCapture={this.tagOrigin}>
         <Media>
           <Media.Left>
             <div className="game-thumbnail-container-list">
@@ -102,6 +83,8 @@ class GameRow extends ComponentEx<IProps, {}> {
 
           <Media.Body>
             <Media.Heading>{t(game.name.replace(/\t/g, " "))}</Media.Heading>
+
+            <TierZeroRowBadge game={game} />
 
             {location !== null ? (
               <p>
@@ -171,6 +154,15 @@ class GameRow extends ComponentEx<IProps, {}> {
   private openLocation = () => {
     const { discovery } = this.props;
     opn(discovery.path).catch(() => null);
+  };
+
+  // Click capture, because the list layout's add button sits inside IconBar, whose
+  // actions don't take a click context: any click on an unadded row records the row's
+  // list, and only the add the emit is keyed to ends up read.
+  private tagOrigin = () => {
+    if (this.props.source !== undefined) {
+      this.context.api.store.dispatch(setGameAddOrigin(this.props.game.id, this.props.source));
+    }
   };
 
   private changeLocation = () => {

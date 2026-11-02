@@ -6,12 +6,12 @@
     "_assets": "copyfiles -u 1 -f src/stylesheets/feedback.scss issues.json dist",
     "build": "node build.mjs && pnpm extractInfo && pnpm run _assets",
     "typecheck": "pnpm tsc",
-    "test": "pnpm exec vitest run"
+    "test": "pnpm exec vitest run",
+    "lint:strict": "pnpm exec node ../../scripts/strict-lint.mjs"
   },
   "author": "Black Tree Gaming Ltd.",
   "license": "GPL-3.0",
   "devDependencies": {
-    "@mdi/js": "catalog:",
     "@types/react": "catalog:",
     "@types/react-bootstrap": "catalog:",
     "@types/react-redux": "catalog:",

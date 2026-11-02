@@ -78,8 +78,8 @@ import type { ICollectionModInstallInfo } from "../../types/collections/ICollect
 import type { ICheckbox, IDialogResult } from "../../types/IDialog";
 import type { IExtensionApi, ThunkStore } from "../../types/IExtensionContext";
 import type { IProfile, IState } from "../../types/IState";
+import { withActivityTracking } from "../../util/activity";
 import { getBatchContext, type IBatchContext } from "../../util/BatchContext";
-import calculateFolderSize from "../../util/calculateFolderSize";
 import {
   generateCollectionSessionId,
   isOutstandingOptionalMember,
@@ -153,6 +153,7 @@ import { finishDownload } from "../download_management/actions/state";
 import type { IDownload } from "../download_management/types/IDownload";
 import getDownloadGames from "../download_management/util/getDownloadGames";
 import { appendReferenceTagActions } from "../download_management/util/referenceTags";
+import { isExtensionDownload } from "../extension_manager/queries";
 import { discoveryByGame } from "../gamemode_management/selectors";
 import type { IModType } from "../gamemode_management/types/IModType";
 import { getGame } from "../gamemode_management/util/getGame";
@@ -160,6 +161,7 @@ import { convertGameIdReverse } from "../nexus_integration/util/convertGameId";
 import { setModEnabled, setModsEnabled } from "../profile_management/actions/profiles";
 import {
   addModRule,
+  modRulesReplaced,
   removeModRule,
   setFileOverride,
   setINITweakEnabled,
@@ -185,6 +187,7 @@ import type { IModInstaller, ISupportedInstaller } from "./types/IModInstaller";
 import type { IInstallationDetails, InstallFunc } from "./types/InstallFunc";
 import type { IReplaceChoice, ReplaceChoice } from "./types/IReplaceChoice";
 import type { ISupportedResult, ITestSupportedDetails, TestSupported } from "./types/TestSupported";
+import { calculateModSize } from "./util/calculate_mod_size/calculateModSize.util";
 import { getCSharpScriptAllowListForGame } from "./util/cSharpScriptAllowList";
 import gatherDependencies, {
   findDownloadByRef,
@@ -193,6 +196,7 @@ import gatherDependencies, {
 } from "./util/dependencies";
 import filterModInfo from "./util/filterModInfo";
 import { findModByRef } from "./util/findModByRef";
+import { toPosixSeparators } from "./util/installerHelpers";
 import { InstallPhaseTracker, type IDeploymentDetails } from "./util/InstallPhaseTracker";
 import { isFuzzyVersion } from "./util/isFuzzyVersion";
 import metaLookupMatch from "./util/metaLookupMatch";
@@ -202,15 +206,18 @@ import { reconcileOrphanedArchive } from "./util/reconcileOrphanedArchive";
 import { selectRequeueCandidates } from "./util/requeueCandidates";
 import { OPTIONAL_PHASE, rulePhase } from "./util/rulePhase";
 import testModReference, {
+  completeModRef,
   downloadHasReferenceTag,
   downloadReferenceTags,
   downloadToModRef,
   idOnlyRef,
   isDependencyRule,
   isRequiredRule,
+  lookupToModRef,
   modMatchesInstallSpec,
   referenceEqual,
   ruleInstallSpec,
+  rulesByReference,
   testRefByIdentifiers,
 } from "./util/testModReference";
 
@@ -326,18 +333,6 @@ function getReadyDownloadId(
 
 function getModsByPhase(allMods: any[], phase: number): any[] {
   return allMods.filter((mod: any) => (mod.phase ?? 0) === phase);
-}
-
-function withActivityTracking<T>(
-  api: IExtensionApi,
-  activityType: string,
-  activityId: string,
-  promise: PromiseLike<T>,
-): Promise<T> {
-  api.store.dispatch(startActivity(activityType, activityId));
-  return Promise.resolve(promise).finally(() => {
-    api.store.dispatch(stopActivity(activityType, activityId));
-  });
 }
 
 function findCollectionByDownload(
@@ -617,7 +612,7 @@ class InstallManager {
 
         if (recommended) {
           return withActivityTracking(
-            api,
+            api.store.dispatch,
             "installing_dependencies",
             dependentId,
             this.withDependenciesContext("install-recommendations", profile.id, () =>
@@ -635,7 +630,7 @@ class InstallManager {
           );
         } else {
           return withActivityTracking(
-            api,
+            api.store.dispatch,
             "installing_dependencies",
             dependentId,
             this.withDependenciesContext("install-collections", profile.id, () =>
@@ -1351,13 +1346,15 @@ class InstallManager {
                       new ProcessCanceled("You need to select a game before installing this mod"),
                     );
                   }
-                  if (installGameId === "site" && baseName.toLowerCase().includes("extension")) {
-                    // Assumption here is that anything we try to install from the "Modding Tools"/"site" domain
-                    //  that contains "extension" in its archive name is an extension... If a non-extension tool
-                    //  contains "extension" in its archive name... well, that's not good but there's nothing we can
-                    //  do without API providing a unique tag for us to identify Vortex extensions. (AFAIK we can't even query the existing tags from the website)
-                    // Installation of non-Vortex tools with the extension basename will just install as a mod for
-                    //  the current game which I guess should be fine.
+                  if (
+                    installGameId === "site" &&
+                    isExtensionDownload(
+                      state.session.extensions.available,
+                      baseName,
+                      dlInfo?.modInfo?.nexus?.ids?.modId,
+                    )
+                  ) {
+                    // other "site" downloads are modding tools and install as a mod for the current game
                     return Promise.resolve(installGameId);
                   }
                   if (games.find((iter) => iter.id === installGameId) === undefined) {
@@ -1460,6 +1457,12 @@ class InstallManager {
                   const match = metaLookupMatch(modInfo, path.basename(archivePath), installGameId);
                   if (match !== undefined) {
                     fullInfo.meta = match.value;
+                    // the installers only get the details, make them aware of what the lookup
+                    // found. Archives without a download (local files) have no other source.
+                    details.modReference = completeModRef(
+                      details.modReference,
+                      lookupToModRef(match.value, archiveMD5, installGameId),
+                    );
                   }
 
                   modId = this.deriveInstallName(baseName, fullInfo);
@@ -1603,7 +1606,9 @@ class InstallManager {
                       }
                       const depRule = (mods[iter].rules ?? []).find(
                         (rule) =>
-                          rule.type === "requires" && testModReference(existingMod, rule.reference),
+                          rule.type === "requires" &&
+                          rule.ignored !== true &&
+                          testModReference(existingMod, rule.reference),
                       );
                       if (depRule !== undefined) {
                         prev[iter] = { owner: iter, rule: depRule };
@@ -1718,6 +1723,8 @@ class InstallManager {
                   log("info", "installing to", { modId, destinationPath });
                   installContext.setInstallPathCB(modId, destinationPath);
                   tempPath = destinationPath + ".installing";
+                  details.previousAttributes = fullInfo.previous;
+                  details.archiveId = archiveId ?? undefined;
                   return this.installInner(
                     api,
                     archivePath,
@@ -2183,6 +2190,9 @@ class InstallManager {
     if (mod === undefined) {
       return Promise.reject(new ProcessCanceled(`Invalid mod specified "${modId}"`));
     }
+    if (profile === undefined) {
+      return Promise.reject(new ProcessCanceled(`Invalid profile specified for "${modId}"`));
+    }
 
     this.repairRules(api, mod, gameId);
 
@@ -2200,7 +2210,7 @@ class InstallManager {
     );
 
     return withActivityTracking(
-      api,
+      api.store.dispatch,
       "installing_dependencies",
       mod.id,
       this.withDependenciesContext("install-dependencies", profile.id, () =>
@@ -2235,6 +2245,9 @@ class InstallManager {
     if (mod === undefined) {
       return Promise.reject(new ProcessCanceled(`Invalid mod specified "${modId}"`));
     }
+    if (profile === undefined) {
+      return Promise.reject(new ProcessCanceled(`Invalid profile specified for "${modId}"`));
+    }
 
     this.repairRules(api, mod, gameId);
 
@@ -2242,7 +2255,7 @@ class InstallManager {
     log("info", "start installing recommendations", { modId });
 
     return withActivityTracking(
-      api,
+      api.store.dispatch,
       "installing_dependencies",
       mod.id,
       this.withDependenciesContext("install-recommendations", profile.id, () =>
@@ -2311,23 +2324,7 @@ class InstallManager {
   }
 
   private setModSize(api: IExtensionApi, modId: string, gameId: string): Promise<void> {
-    const state = api.getState();
-    const stagingFolder = installPathForGame(state, gameId);
-    const mod = state.persistent.mods[gameId]?.[modId];
-    if (mod?.installationPath === undefined) {
-      log("debug", "failed to calculate modSize", "mod is not in state");
-      return Promise.resolve();
-    }
-    const modPath = path.join(stagingFolder, mod.installationPath);
-    return Promise.resolve(calculateFolderSize(modPath))
-      .then((totalSize) => {
-        api.store.dispatch(setModAttribute(gameId, mod.id, "modSize", totalSize));
-        return Promise.resolve();
-      })
-      .catch((err) => {
-        log("debug", "failed to calculate modSize", err);
-        return Promise.resolve();
-      });
+    return calculateModSize(api.store, gameId, modId);
   }
 
   /**
@@ -4111,6 +4108,8 @@ class InstallManager {
         const innerDetails: IInstallationDetails = {
           hasInstructionsOverrideFile: overrideInstructionsFilePresentInArchive,
           modReference: details?.modReference,
+          previousAttributes: details?.previousAttributes,
+          archiveId: details?.archiveId,
           hasCSScripts: supportedInstaller?.hasCSScripts,
           hasXmlConfigXML: supportedInstaller?.hasXmlConfigXML,
         };
@@ -4259,7 +4258,7 @@ class InstallManager {
                 },
               ],
             },
-            [{ label: "Cancel" }, { label: "Continue" }],
+            [{ label: "Cancel" }, { label: "Continue", default: true }],
           ),
         )
         .then((result: IDialogResult) => {
@@ -4609,7 +4608,7 @@ class InstallManager {
       }
     });
 
-    const finalInstructions = result.instructions
+    let finalInstructions = result.instructions
       .filter((instr) => (instr.source ?? instr.type) != null)
       .map((instr) => {
         const key = (instr.source ?? instr.type).toUpperCase();
@@ -4654,6 +4653,10 @@ class InstallManager {
           finalInstructions.push(instr);
         }
       }
+    }
+
+    if (process.platform !== "win32") {
+      finalInstructions = finalInstructions.map(toPosixSeparators);
     }
 
     const invalidInstructions = this.validateInstructions(finalInstructions);
@@ -6281,15 +6284,18 @@ class InstallManager {
               queuedDownloads.splice(idx, 1);
 
               const errMsg = unknownToError(err).message;
-              const errCode = getErrorCode(err);
+              const parsedErr = parseError(err);
 
-              // Check if this is a network error that might have caused the download to be paused
+              // a failure of the connection itself (which may have paused the download), as
+              // opposed to a refusal by the server
               const isNetworkError =
-                errMsg?.includes("socket hang up") ||
-                errMsg?.includes("ECONNRESET") ||
-                errMsg?.includes("ETIMEDOUT") ||
-                errCode === "ECONNRESET" ||
-                errCode === "ETIMEDOUT";
+                parsedErr.data.kind === "http:generic" ||
+                parsedErr.data.kind === "http:timeout" ||
+                (parsedErr.data.kind === "http:bad-status" && parsedErr.data.statusCode >= 500) ||
+                (parsedErr.data.kind === "os:generic" &&
+                  ["ECONNRESET", "ECONNABORTED", "ETIMEDOUT"].includes(
+                    parsedErr.data.originalCode,
+                  ));
 
               // Check if this is a "File already downloaded" error (for cases where we get a generic error message)
               const isAlreadyDownloaded =
@@ -6770,35 +6776,6 @@ class InstallManager {
     return res;
   }
 
-  private updateModRule(
-    api: IExtensionApi,
-    gameId: string,
-    sourceModId: string,
-    dep: IDependency,
-    reference: IModReference,
-    recommended: boolean,
-  ): IModRule | undefined {
-    const state: IState = api.store.getState();
-    const rules: IModRule[] = getSafe(state.persistent.mods, [gameId, sourceModId, "rules"], []);
-    const oldRule = rules.find((iter) => referenceEqual(iter.reference, dep.reference));
-
-    const type = recommended ? "recommends" : "requires";
-
-    if (oldRule === undefined) {
-      return undefined;
-    }
-
-    if (oldRule.type === type && referenceEqual(oldRule.reference, reference)) {
-      return oldRule;
-    }
-
-    const updatedRule: IModRule = { ...oldRule, type, reference };
-
-    api.store.dispatch(removeModRule(gameId, sourceModId, oldRule));
-    api.store.dispatch(addModRule(gameId, sourceModId, updatedRule));
-    return updatedRule;
-  }
-
   private updateRules(
     api: IExtensionApi,
     gameId: string,
@@ -6806,11 +6783,26 @@ class InstallManager {
     dependencies: IDependency[],
     recommended: boolean,
   ): Promise<void> {
-    dependencies.forEach((dep) => {
-      const updatedRef: IModReference = { ...dep.reference };
-      updatedRef.idHint = dep.mod?.id;
-      this.updateModRule(api, gameId, sourceModId, dep, updatedRef, recommended);
+    const findRule = rulesByReference(
+      api.getState().persistent.mods[gameId]?.[sourceModId]?.rules ?? [],
+    );
+    const type = recommended ? "recommends" : "requires";
+
+    const replacements = dependencies.flatMap((dep) => {
+      const oldRule = findRule(dep.reference);
+      const reference: IModReference = { ...dep.reference, idHint: dep.mod?.id };
+      if (
+        oldRule === undefined ||
+        (oldRule.type === type && referenceEqual(oldRule.reference, reference))
+      ) {
+        return [];
+      }
+      const newRule: IModRule = { ...oldRule, type, reference };
+      return [{ oldRule, newRule }];
     });
+    if (replacements.length > 0) {
+      api.store.dispatch(modRulesReplaced(gameId, sourceModId, replacements));
+    }
     return Promise.resolve();
   }
 

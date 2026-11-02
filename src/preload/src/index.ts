@@ -1,23 +1,26 @@
-import { type ErrorOriginTracker, rehydrateSerializedError, serializeError } from "@vortex/shared";
+import { VortexError } from "@vortex/shared";
+import type {
+  QualifiedPath,
+  QualifiedPathWire,
+  StatResult,
+  Status,
+  StatusTime,
+} from "@vortex/shared/filesystem";
+import { fromWire, toWire } from "@vortex/shared/filesystem";
 import type {
   AppInitMetadata,
-  RendererChannels,
-  InvokeChannels,
-  MainChannels,
-  CallbackChannels,
-  SerializableArgs,
-  AssertSerializable,
+  EnumerateEntryWire,
   Serializable,
-  SerializedError,
-  WireResult,
+  TemporalWire,
 } from "@vortex/shared/ipc";
 import type { PreloadWindow } from "@vortex/shared/preload";
 import type { PersistedHive } from "@vortex/shared/state";
 import { contextBridge, ipcRenderer } from "electron";
-
-// NOTE(erri120): Welcome to the preload script. This is the correct and safe place to expose data and methods to the renderer. Here are a few rules and tips to make your life easier:
+// NOTE(erri120): Welcome to the preload script. This is the correct and safe place to expose data and methods to the renderer. Here are some rules and tips to make your life easier:
 // 1) Never expose anything electron related to the renderer. This is what the preload script is for.
 // 2) Use betterIpcRenderer defined below instead of raw ipcRenderer.
+
+import { rendererCallback, rendererInvoke, rendererOff, rendererOn, rendererSend } from "./ipc";
 
 const betterIpcRenderer = {
   invoke: rendererInvoke,
@@ -25,36 +28,6 @@ const betterIpcRenderer = {
   on: rendererOn,
   off: rendererOff,
   callback: rendererCallback,
-};
-
-// Pass renderer-owned errors by reference across the IPC round-trip: a callback
-// error serialized here (rendererCallback) is stashed live and handed straight
-// back when its proxied copy returns (rendererInvoke) — preserving identity,
-// prototype and the real throw-site stack. Bounded, so a one-way error that
-// never returns is evicted rather than retained; an evicted ref just falls back
-// to generic-Error hydration. The renderer and preload share one V8 context
-// (contextIsolation is off for the main window), so the stashed object is the
-// same one the callback threw. The "renderer" namespace keeps these refs
-// distinct from any tracker main owns.
-const ORIGIN_STASH_MAX = 512;
-const originStash = new Map<string, Error>();
-let originSeq = 0;
-const errorOriginTracker: ErrorOriginTracker = {
-  namespace: "renderer",
-  capture: (err: Error): string => {
-    const id = `${originSeq++}`;
-    originStash.set(id, err);
-    if (originStash.size > ORIGIN_STASH_MAX) {
-      const oldest = originStash.keys().next().value;
-      if (oldest !== undefined) originStash.delete(oldest);
-    }
-    return id;
-  },
-  resolve: (id: string): Error | undefined => {
-    const err = originStash.get(id);
-    if (err !== undefined) originStash.delete(id);
-    return err;
-  },
 };
 
 try {
@@ -332,9 +305,295 @@ try {
       reportMetrics: (bucket) => betterIpcRenderer.send("flags:metrics", bucket),
       setContext: (context) => betterIpcRenderer.send("flags:setContext", context),
     },
+
+    fs: {
+      copy(source, target, options) {
+        return betterIpcRenderer.invoke("fs:copy", toWire(source), toWire(target), options);
+      },
+      createDirectory(path) {
+        return betterIpcRenderer.invoke("fs:createDirectory", toWire(path));
+      },
+      createLink(from, to, type) {
+        return betterIpcRenderer.invoke("fs:createLink", toWire(from), toWire(to), type);
+      },
+      delete(path) {
+        return betterIpcRenderer.invoke("fs:delete", toWire(path));
+      },
+      deleteRecursive(path) {
+        return betterIpcRenderer.invoke("fs:deleteRecursive", toWire(path));
+      },
+      writeFile(path, contents) {
+        return betterIpcRenderer.invoke("fs:writeFile", toWire(path), contents);
+      },
+      async readFile(path) {
+        return betterIpcRenderer.invoke("fs:readFile", toWire(path));
+      },
+      move(source, target, options) {
+        return betterIpcRenderer.invoke("fs:move", toWire(source), toWire(target), options);
+      },
+      async stat(path, options) {
+        const result = await betterIpcRenderer.invoke("fs:stat", toWire(path), options);
+        return statFromWire(result);
+      },
+
+      createStream,
+
+      enumerateDirectory,
+    },
   });
 } catch (err) {
   console.error("failed to run preload code", err);
+}
+
+/** Fixed pull size for directory enumeration: amortizes one invoke across
+ *  this many entries. */
+const ENUMERATE_BATCH_SIZE = 512;
+
+/** Fixed pull size for read streams. Chunk replies are granular to the
+ *  underlying stream's chunk size, so this only bounds the reply, and a
+ *  reply may exceed it by up to one underlying chunk. */
+const STREAM_READ_CHUNK_SIZE = 4 * 1024 * 1024;
+
+function createStream(
+  path: QualifiedPath,
+  mode: "r",
+  options?: { start?: number; end?: number },
+): Promise<ReadableStream<Uint8Array>>;
+function createStream(
+  path: QualifiedPath,
+  mode: "w",
+  options?: { start?: number },
+): Promise<WritableStream<Uint8Array>>;
+function createStream(
+  path: QualifiedPath,
+  mode: string,
+  options?: { start?: number; end?: number },
+): Promise<ReadableStream<Uint8Array> | WritableStream<Uint8Array>> {
+  if (mode === "r") {
+    return openReadStream(path, options);
+  }
+
+  if (mode === "w") {
+    return openWriteStream(path, { start: options?.start });
+  }
+
+  throw new VortexError(`Cannot create stream for '${path.path}': unknown mode '${mode}'`, {
+    kind: "argument-invalid",
+    argument: "mode",
+  });
+}
+
+async function openReadStream(
+  path: QualifiedPath,
+  options?: { start?: number; end?: number },
+): Promise<ReadableStream<Uint8Array>> {
+  const handle = await betterIpcRenderer.invoke("fs:stream-open", toWire(path), "r", options);
+
+  let exhausted = false;
+  let closed = false;
+
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    // Fire-and-forget: main evicts handles on done, so an unknown handle
+    // here is normal exhaustion, not an error worth surfacing.
+    betterIpcRenderer.invoke("fs:stream-close", handle).catch(() => undefined);
+  };
+
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (closed || exhausted) {
+        controller.close();
+        return;
+      }
+
+      const reply = await betterIpcRenderer.invoke(
+        "fs:stream-read",
+        handle,
+        STREAM_READ_CHUNK_SIZE,
+      );
+
+      controller.enqueue(reply.bytes);
+
+      if (reply.done) {
+        exhausted = true;
+      }
+    },
+    cancel() {
+      close();
+    },
+  });
+}
+
+async function openWriteStream(
+  path: QualifiedPath,
+  options?: { start?: number },
+): Promise<WritableStream<Uint8Array>> {
+  const handle = await betterIpcRenderer.invoke("fs:stream-open", toWire(path), "w", options);
+
+  let closed = false;
+
+  // One invoke per write chunk (no renderer-side batching): round-trip
+  // overhead is noise for realistic chunk sizes, and per-write rejection
+  // keeps ENOSPC-class errors surfaced at the right await point.
+  return new WritableStream<Uint8Array>({
+    async write(chunk) {
+      await betterIpcRenderer.invoke("fs:stream-write", handle, chunk);
+    },
+    close() {
+      if (closed) return;
+      closed = true;
+      betterIpcRenderer.invoke("fs:stream-close", handle).catch(() => undefined);
+    },
+    abort() {
+      // An errored WritableStream aborts instead of closing. Main evicts on
+      // write failures already, so this is a tolerated no-op there; for a
+      // caller-initiated abort it releases the handle and truncates the
+      // file at the last flushed offset (writer.abort on main).
+      if (closed) return;
+      closed = true;
+      betterIpcRenderer.invoke("fs:stream-close", handle).catch(() => undefined);
+    },
+  });
+}
+
+function enumerateDirectory(
+  path: QualifiedPath,
+  options?: {
+    includeStatus?: false;
+    types?: "all" | "files" | "directories";
+    recursive?: boolean;
+    include?: string;
+    exclude?: string;
+  },
+): Promise<AsyncIterableIterator<QualifiedPath, undefined>>;
+function enumerateDirectory(
+  path: QualifiedPath,
+  options: {
+    includeStatus: true | "symlink";
+    types?: "all" | "files" | "directories";
+    recursive?: boolean;
+    include?: string;
+    exclude?: string;
+  },
+): Promise<AsyncIterableIterator<[QualifiedPath, Status], undefined>>;
+function enumerateDirectory(
+  path: QualifiedPath,
+  options?: {
+    includeStatus?: boolean | "symlink";
+    types?: "all" | "files" | "directories";
+    recursive?: boolean;
+    include?: string;
+    exclude?: string;
+  },
+): Promise<AsyncIterableIterator<QualifiedPath | [QualifiedPath, Status], undefined>> {
+  return openEnumeration(path, options);
+}
+
+async function openEnumeration(
+  path: QualifiedPath,
+  options?: {
+    includeStatus?: boolean | "symlink";
+    types?: "all" | "files" | "directories";
+    recursive?: boolean;
+    include?: string;
+    exclude?: string;
+  },
+): Promise<AsyncIterableIterator<QualifiedPath | [QualifiedPath, Status], undefined>> {
+  const handle = await betterIpcRenderer.invoke("fs:enumerate-open", toWire(path), options);
+  const withStatus = Boolean(options?.includeStatus);
+
+  let buffer: EnumerateEntryWire[] = [];
+  let exhausted = false;
+  let closed = false;
+
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    // Fire-and-forget: main evicts handles on done, so an unknown handle
+    // here is normal exhaustion, not an error worth surfacing.
+    betterIpcRenderer.invoke("fs:enumerate-close", handle).catch(() => undefined);
+  };
+
+  const iterator: AsyncIterableIterator<QualifiedPath | [QualifiedPath, Status], undefined> = {
+    [Symbol.asyncIterator]() {
+      return iterator;
+    },
+    async next() {
+      if (closed) return { done: true, value: undefined };
+
+      while (buffer.length === 0 && !exhausted) {
+        const reply = await betterIpcRenderer.invoke(
+          "fs:enumerate-next",
+          handle,
+          ENUMERATE_BATCH_SIZE,
+        );
+
+        if (reply.entries.length > 0) {
+          buffer = reply.entries;
+        }
+
+        // A done reply may still carry the tail of the listing. Only
+        // `exhausted` stops further pulls; `closed` stays reserved for
+        // explicit return()/throw() so the tail is always drained before
+        // iteration reports done.
+        if (reply.done) {
+          exhausted = true;
+        }
+      }
+
+      if (buffer.length === 0) return { done: true, value: undefined };
+
+      const entry = buffer.shift();
+      if (entry === undefined) return { done: true, value: undefined };
+
+      if (!withStatus) {
+        // oxlint-disable-next-line typescript/no-unsafe-type-assertion
+        return { done: false, value: fromWire(entry as unknown as QualifiedPathWire) };
+      }
+
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion
+      const [wirePath, wireStatus] = entry as unknown as [QualifiedPathWire, TemporalWire<Status>];
+      return { done: false, value: [fromWire(wirePath), statusFromWire(wireStatus)] };
+    },
+    async return() {
+      close();
+      return { done: true as const, value: undefined };
+    },
+    async throw(err) {
+      close();
+      throw err;
+    },
+  };
+  return iterator;
+}
+
+function statFromWire(result: TemporalWire<StatResult>): StatResult {
+  if (!result.exists) return result;
+  return { exists: true, ...statusFromWire(result) };
+}
+
+function statusFromWire(status: TemporalWire<Status>): Status {
+  const times = timesFromWire(status);
+
+  if (status.isSymLink) {
+    return {
+      ...status,
+      ...times,
+      symLinkData: timesFromWire(status.symLinkData),
+    };
+  }
+
+  return { ...status, ...times };
+}
+
+function timesFromWire(times: TemporalWire<StatusTime>): StatusTime {
+  return {
+    accessTime: Temporal.Instant.fromEpochNanoseconds(times.accessTime),
+    modifiedTime: Temporal.Instant.fromEpochNanoseconds(times.modifiedTime),
+    changeTime: Temporal.Instant.fromEpochNanoseconds(times.changeTime),
+    creationTime: Temporal.Instant.fromEpochNanoseconds(times.creationTime),
+  };
 }
 
 function expose<K extends keyof PreloadWindow>(key: K, value: PreloadWindow[K]) {
@@ -347,88 +606,4 @@ function expose<K extends keyof PreloadWindow>(key: K, value: PreloadWindow[K]) 
     // oxlint-disable-next-line typescript/no-unsafe-type-assertion
     (window as unknown as PreloadWindow)[key] = value;
   }
-}
-
-async function rendererInvoke<C extends keyof InvokeChannels>(
-  channel: C,
-  ...args: SerializableArgs<Parameters<InvokeChannels[C]>>
-): Promise<AssertSerializable<Awaited<ReturnType<InvokeChannels[C]>>>> {
-  const reply = await ipcRenderer.invoke(channel, ...args);
-  if (isWireResult<AssertSerializable<Awaited<ReturnType<InvokeChannels[C]>>>>(reply)) {
-    if (reply.ok) return reply.value;
-    // oxlint-disable-next-line typescript/no-unsafe-type-assertion
-    throw rehydrateSerializedError(reply.error as unknown as SerializedError, errorOriginTracker);
-  }
-
-  return reply;
-}
-
-function isWireResult<T>(value: unknown): value is WireResult<T> {
-  return (
-    typeof value === "object" && value !== null && "ok" in value && typeof value.ok === "boolean"
-  );
-}
-
-function rendererSend<C extends keyof RendererChannels>(
-  channel: C,
-  ...args: SerializableArgs<Parameters<RendererChannels[C]>>
-): void {
-  ipcRenderer.send(channel, ...args);
-}
-
-function rendererOn<C extends keyof MainChannels>(
-  channel: C,
-  listener: (
-    event: Electron.IpcRendererEvent,
-    ...args: SerializableArgs<Parameters<MainChannels[C]>>
-  ) => void,
-): void {
-  ipcRenderer.on(channel, listener);
-}
-
-function rendererOff<C extends keyof MainChannels>(
-  channel: C,
-  listener: (
-    event: Electron.IpcRendererEvent,
-    ...args: SerializableArgs<Parameters<MainChannels[C]>>
-  ) => void,
-): void {
-  ipcRenderer.off(channel, listener);
-}
-
-// Registers a handler for a callback channel. Main sends a request on `channel`
-// with a collation id; the handler produces (or rejects with) a value, which is
-// sent back on `callback:${channel}` wrapped in a WireCallbackResult. Rejections
-// are serialized so main can rehydrate the real error instead of waiting out the
-// callback timeout. Returns an unsubscribe function. This is the renderer-side
-// counterpart to betterIpcMain.callback.
-function rendererCallback<C extends keyof CallbackChannels>(
-  channel: C,
-  handler: (
-    collationId: number,
-    ...args: SerializableArgs<Parameters<CallbackChannels[C]>>
-  ) => Promise<Awaited<ReturnType<CallbackChannels[C]>>>,
-): () => void {
-  const listener = (
-    _event: Electron.IpcRendererEvent,
-    collationId: number,
-    ...args: SerializableArgs<Parameters<CallbackChannels[C]>>
-  ) => {
-    handler(collationId, ...args)
-      .then((value) => {
-        ipcRenderer.send(`callback:${channel}`, collationId, {
-          ok: true,
-          value,
-        });
-        return undefined;
-      })
-      .catch((err: unknown) => {
-        ipcRenderer.send(`callback:${channel}`, collationId, {
-          ok: false,
-          error: serializeError(err, errorOriginTracker),
-        });
-      });
-  };
-  ipcRenderer.on(channel, listener);
-  return () => ipcRenderer.removeListener(channel, listener);
 }

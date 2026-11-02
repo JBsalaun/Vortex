@@ -19,14 +19,20 @@
  * Test-only: nothing in the production tree imports this module.
  */
 import { EventEmitter } from "events";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import * as os from "os";
 import * as path from "path";
 
 import type { IFileInfo, IPreference, IUserInfo } from "@nexusmods/nexus-api";
 import type NexusT from "@nexusmods/nexus-api";
+import { VortexProfileId } from "@vortex/shared";
 import type { WireDownloadCheckpoint, WireResolvedResource } from "@vortex/shared/ipc";
 import type { Api, DownloaderApi } from "@vortex/shared/preload";
+import type { LootAsync, PluginInterface, PluginMetadata, Vertex } from "loot";
+import { applyMiddleware, createStore, type Middleware } from "redux";
 import { batch } from "redux-act";
-import { vi } from "vitest";
+import thunkMiddleware from "redux-thunk";
+import { onTestFinished, vi } from "vitest";
 
 import type { MixpanelEvent } from "../extensions/analytics/mixpanel/MixpanelEvents";
 import type { ICategory } from "../extensions/category_management/types/ICategoryDictionary";
@@ -40,9 +46,30 @@ import type InstallDriver from "../extensions/collections/util/InstallDriver";
 import { stateReducer as downloadStateReducer } from "../extensions/download_management/reducers/state";
 import { downloadPathForGame } from "../extensions/download_management/selectors";
 import type { IDownload, IModInfo } from "../extensions/download_management/types/IDownload";
-import type { ILoadOrderEntry } from "../extensions/file_based_loadorder/types/types";
-import type UpdateSet from "../extensions/file_based_loadorder/UpdateSet";
+import { resolveEntry } from "../extensions/file_based_loadorder/registry";
+import type {
+  ILoadOrderEntry,
+  ILoadOrderGameInfo,
+  IRegisteredLoadOrder,
+  IValidationResult,
+  LoadOrder,
+} from "../extensions/file_based_loadorder/types/types";
+import type { IESPFile } from "../extensions/gamebryo_plugin_management/types/IESPFile";
+import type {
+  IPlugin,
+  IPluginCombined,
+  IPluginLoot,
+} from "../extensions/gamebryo_plugin_management/types/IPlugins";
+import type PluginPersistor from "../extensions/gamebryo_plugin_management/util/PluginPersistor";
+import toPluginId from "../extensions/gamebryo_plugin_management/util/toPluginId";
+import type { IDiscoveryResult } from "../extensions/gamemode_management/types/IDiscoveryResult";
 import type { IGameStored } from "../extensions/gamemode_management/types/IGameStored";
+import { getGame } from "../extensions/gamemode_management/util/getGame";
+import {
+  getModTypeExtensions,
+  registerModType,
+} from "../extensions/gamemode_management/util/modTypeExtensions";
+import type { IExtensionContextEx } from "../extensions/hardlink_activator";
 import type { HealthCheckRegistry } from "../extensions/health_check/core/HealthCheckRegistry";
 import type {
   HealthCheckId,
@@ -50,9 +77,18 @@ import type {
   IModRequirementExt,
 } from "../extensions/health_check/types";
 import { ModFileCategory } from "../extensions/health_check/types";
+import type { IHistoryEvent } from "../extensions/history_management/types";
+import { setDeploymentNecessary } from "../extensions/mod_management/actions/deployment";
 import type InstallContext from "../extensions/mod_management/InstallContext";
 import type InstallManager from "../extensions/mod_management/InstallManager";
+import { deploymentReducer } from "../extensions/mod_management/reducers/deployment";
 import { modsReducer } from "../extensions/mod_management/reducers/mods";
+import type {
+  IDeployedFile,
+  IDeploymentMethod,
+  IFileChange,
+} from "../extensions/mod_management/types/IDeploymentMethod";
+import type { IDeployOptions } from "../extensions/mod_management/types/IDeployOptions";
 import type {
   IChoiceType,
   IFileListItem,
@@ -61,24 +97,39 @@ import type {
   IModReference,
   IModRule,
 } from "../extensions/mod_management/types/IMod";
+import {
+  getAllActivators,
+  registerDeploymentMethod,
+} from "../extensions/mod_management/util/deploymentMethods";
 import type { InstallPhaseTracker } from "../extensions/mod_management/util/InstallPhaseTracker";
 import type { IModLookupInfo } from "../extensions/mod_management/util/testModReference";
+import { accountReducer as nexusAccountReducer } from "../extensions/nexus_integration/reducers/account";
 import { persistentReducer as nexusPersistentReducer } from "../extensions/nexus_integration/reducers/persistent";
 import { sessionReducer as nexusSessionReducer } from "../extensions/nexus_integration/reducers/session";
 import type { IValidateKeyDataV2 } from "../extensions/nexus_integration/types/IValidateKeyData";
 import { MEMBERSHIP_ROLE, transformUserInfoFromApi } from "../extensions/nexus_integration/util";
+import { setNextProfile } from "../extensions/profile_management/actions/settings";
+import { settingsReducer as profileSettingsReducer } from "../extensions/profile_management/reducers/settings";
 import type { IProfile, IProfileMod } from "../extensions/profile_management/types/IProfile";
+import { profilePath } from "../extensions/profile_management/util/manage";
 import type { IPCDownloadAdapter } from "../IPCDownloadAdapter";
 import trackingReducer from "../reducers/collectionInstallTracking";
+import { addToTree, Decision, deriveReducer } from "../reducers/index";
+import ReduxWatcher from "../store/ReduxWatcher";
 import type {
   CollectionModStatus,
   ICollectionInstallSession,
   ICollectionInstallState,
   ICollectionModInstallInfo,
 } from "../types/collections/ICollectionInstallSession";
-import type { IAvailableExtension } from "../types/extensions";
+import type { IAvailableExtension, IExtensionReducer } from "../types/extensions";
 import type { DialogActions, DialogType, IDialogContent, IDialogResult } from "../types/IDialog";
-import type { IExtensionApi } from "../types/IExtensionContext";
+import type {
+  IExtensionApi,
+  IExtensionContext,
+  IRunOptions,
+  IStateVerifier,
+} from "../types/IExtensionContext";
 import type { IGame } from "../types/IGame";
 import type { IHealthCheckResult, IModCheckContext, IModHealthCheck } from "../types/IHealthCheck";
 import {
@@ -86,6 +137,7 @@ import {
   HealthCheckSeverity,
   HealthCheckTrigger,
 } from "../types/IHealthCheck";
+import type { INotification } from "../types/INotification";
 import type { IExtensionState, IState } from "../types/IState";
 import local from "../util/local";
 import type { IStarterInfo } from "../util/StarterInfo";
@@ -96,8 +148,10 @@ import type {
   IDownloadAdapterOpts,
   IDriverHarness,
   IDriverHarnessState,
-  IFbloHarness,
-  IFbloHarnessOpts,
+  IFakeLoot,
+  IFakePersistor,
+  IGameHarness,
+  IGameHarnessOpts,
   IHealthCheckHarness,
   IHealthCheckHarnessOpts,
   IInstallContextHarness,
@@ -108,6 +162,8 @@ import type {
   INxmHarness,
   IParkCheckOpts,
   IParkedCheck,
+  IProfileSwitchHarness,
+  IProfileSwitchOpts,
   IRevisionFixture,
   IRevisionMemberSpec,
   ITrackedAction,
@@ -165,6 +221,250 @@ export function makeMod(overrides: Partial<IMod> = {}): IMod {
     type: "",
     installationPath: "mods/mod-1",
     attributes: {},
+    ...overrides,
+  };
+}
+
+/** A file change as a deployment method's externalChanges reports it. */
+export function makeFileChange(overrides: Partial<IFileChange> = {}): IFileChange {
+  return {
+    filePath: "plugin.esp",
+    source: "mod-1",
+    sourceTime: new Date(0),
+    destTime: new Date(0),
+    changeType: "refchange",
+    ...overrides,
+  };
+}
+
+/** A file of a deployment manifest: a mod's file deployed straight into the mod type's folder. */
+export function makeDeployedFile(overrides: Partial<IDeployedFile> = {}): IDeployedFile {
+  return {
+    relPath: "plugin.esp",
+    source: "mod-1",
+    time: 1,
+    ...overrides,
+  };
+}
+
+/** A deployment method that supports every game and whose purge steps do nothing. */
+export function makeDeploymentMethod(
+  overrides: Partial<IDeploymentMethod> = {},
+): IDeploymentMethod {
+  return {
+    id: "test-method",
+    name: "Test Deployment",
+    priority: 1,
+    isFallbackPurgeSafe: true,
+    isSupported: () => undefined,
+    prePurge: () => Promise.resolve(),
+    purge: () => Promise.resolve(),
+    postPurge: () => Promise.resolve(),
+    ...overrides,
+  } as IDeploymentMethod;
+}
+
+/** A game with no deploy skip patterns. */
+export function makeBlacklistGame(): IGame {
+  return { details: {} } as unknown as IGame;
+}
+
+/** The deployment method an extension's init registers, bound to the api. */
+export function makeRealDeploymentMethod(
+  api: IExtensionApi,
+  init: (context: IExtensionContextEx) => boolean,
+): IDeploymentMethod {
+  let method: IDeploymentMethod;
+  const context: Partial<IExtensionContextEx> = {
+    api,
+    registerDeploymentMethod: (registered: IDeploymentMethod) => {
+      method = registered;
+    },
+  };
+  init(context as IExtensionContextEx);
+  return method;
+}
+
+/** Removes `entry` from `registry` if present. */
+function unregister<T>(registry: T[], entry: T): void {
+  const index = registry.indexOf(entry);
+  if (index >= 0) {
+    registry.splice(index, 1);
+  }
+}
+
+/** Registers a deployment method for the current test. */
+export function registerTestDeploymentMethod(method: IDeploymentMethod): void {
+  registerDeploymentMethod(method);
+  onTestFinished(() => unregister(getAllActivators(), method));
+}
+
+/** Registers a mod type deploying to `deployPath` for the current test. */
+export function registerTestModType(typeId: string, deployPath: string): void {
+  registerModType(
+    typeId,
+    50,
+    () => true,
+    () => deployPath,
+    vi.fn(),
+  );
+  const registered = getModTypeExtensions();
+  const modType = registered[registered.length - 1];
+  onTestFinished(() => unregister(getModTypeExtensions(), modType));
+}
+
+/**
+ * A collection as it appears in persistent.mods: the container mod carrying the published
+ * collection's slug and revision, with one rule per member. Pass `rules` to give it members.
+ */
+export function makeInstalledCollection(overrides: Partial<IMod> = {}): IMod {
+  return makeMod({
+    id: "collection-1",
+    type: MOD_TYPE,
+    attributes: { collectionSlug: "slug-1", revisionNumber: 1 },
+    ...overrides,
+  });
+}
+
+export function makePlugin(overrides: Partial<IPlugin> = {}): IPlugin {
+  return {
+    filePath: path.join(os.tmpdir(), "vortex-test-plugins", "One.esp"),
+    isNative: false,
+    deployed: true,
+    ...overrides,
+  };
+}
+
+/** A plugin row as the plugins table sees it: file, load order, header and LOOT data combined. */
+export function makePluginCombined(overrides: Partial<IPluginCombined> = {}): IPluginCombined {
+  const name = overrides.name ?? "One.esp";
+  return {
+    ...makePlugin(),
+    ...makePluginLoot(),
+    id: toPluginId(name),
+    name,
+    modIndex: 0,
+    enabled: true,
+    loadOrder: 0,
+    isMaster: false,
+    isLight: false,
+    isMedium: false,
+    isBlueprint: false,
+    parseFailed: false,
+    masterList: [],
+    author: "",
+    description: "",
+    revision: 0,
+    ...overrides,
+  };
+}
+
+/** LOOT's masterlist/userlist metadata answer for a plugin (getPluginMetadata). */
+export function makePluginMetadata(overrides: Partial<PluginMetadata> = {}): PluginMetadata {
+  return {
+    name: "One.esp",
+    group: "",
+    messages: [],
+    tags: [],
+    cleanInfo: [],
+    dirtyInfo: [],
+    incompatibilities: [],
+    loadAfterFiles: [],
+    locations: [],
+    requirements: [],
+    ...overrides,
+  };
+}
+
+/** LOOT's loaded-plugin answer (getPlugin), as read after a loadPlugins pass. */
+export function makeLootPluginInterface(overrides: Partial<PluginInterface> = {}): PluginInterface {
+  return {
+    name: "One.esp",
+    version: "",
+    headerVersion: null,
+    masters: [],
+    bashTags: [],
+    crc: 0,
+    isMaster: false,
+    isLightPlugin: false,
+    isValidAsLightPlugin: false,
+    IsMediumPlugin: false,
+    IsValidAsMediumPlugin: false,
+    IsUpdatePlugin: false,
+    IsValidAsUpdatePlugin: false,
+    IsBlueprintPlugin: false,
+    isEmpty: false,
+    loadsArchive: false,
+    ...overrides,
+  };
+}
+
+/**
+ * The loot answers denormalised onto one plugin (IPluginLoot). Defaults to the empty shape
+ * autosort answers for a plugin loot knows nothing about.
+ */
+export function makePluginLoot(overrides: Partial<IPluginLoot> = {}): IPluginLoot {
+  return {
+    messages: [],
+    currentTags: [],
+    suggestedTags: [],
+    cleanliness: [],
+    dirtyness: [],
+    group: undefined,
+    isValidAsLightPlugin: false,
+    loadsArchive: false,
+    isEmpty: false,
+    incompatibilities: [],
+    requirements: [],
+    version: "",
+    ...overrides,
+  };
+}
+
+/** A plugin's parsed TES4 header as parseESPFile hands it out: a plain .esp with no masters. */
+export function makeESPFile(overrides: Partial<IESPFile> = {}): IESPFile {
+  return {
+    isMaster: false,
+    isLight: false,
+    isMedium: false,
+    isDummy: false,
+    isBlueprint: false,
+    author: "",
+    description: "",
+    masterList: [],
+    revision: 0,
+    ...overrides,
+  };
+}
+
+/** A fake loot instance: open, every call succeeding, sort echoing its input. */
+export function makeFakeLoot(overrides: Partial<IFakeLoot> = {}): IFakeLoot {
+  return {
+    clearConditionCache: vi.fn<LootAsync["clearConditionCache"]>(() => Promise.resolve()),
+    close: vi.fn<LootAsync["close"]>(),
+    getGroupsPath: vi.fn<LootAsync["getGroupsPath"]>(() => Promise.resolve<Vertex[]>([])),
+    getPlugin: vi.fn<LootAsync["getPlugin"]>(() => Promise.resolve(undefined)),
+    getPluginMetadata: vi.fn<LootAsync["getPluginMetadata"]>(() => Promise.resolve(undefined)),
+    isClosed: vi.fn<LootAsync["isClosed"]>(() => false),
+    loadCurrentLoadOrderState: vi.fn<LootAsync["loadCurrentLoadOrderState"]>(() =>
+      Promise.resolve(),
+    ),
+    loadLists: vi.fn<LootAsync["loadLists"]>(() => Promise.resolve()),
+    loadPlugins: vi.fn<LootAsync["loadPlugins"]>(() => Promise.resolve()),
+    sortPlugins: vi.fn<LootAsync["sortPlugins"]>((pluginNames) =>
+      Promise.resolve([...pluginNames]),
+    ),
+    strayConnections: 0,
+    ...overrides,
+  };
+}
+
+/** A fake plugin persistor: loads and disables at once, remembers nothing. */
+export function makeFakePersistor(overrides: Partial<IFakePersistor> = {}): IFakePersistor {
+  return {
+    loadFiles: vi.fn<PluginPersistor["loadFiles"]>(() => Promise.resolve()),
+    disable: vi.fn<PluginPersistor["disable"]>(() => Promise.resolve()),
+    setKnownPlugins: vi.fn<PluginPersistor["setKnownPlugins"]>(),
     ...overrides,
   };
 }
@@ -285,6 +585,18 @@ export function makeProfile(overrides: Partial<IProfile> = {}): IProfile {
   };
 }
 
+// A silent state verifier for a required object, filling it in as an empty one when missing.
+export function makeSilentVerifier(overrides: Partial<IStateVerifier> = {}): IStateVerifier {
+  return {
+    description: () => "value missing",
+    type: "object",
+    required: true,
+    silent: true,
+    repair: () => ({}),
+    ...overrides,
+  };
+}
+
 // A launch target as StarterInfo.run receives it. Defaults to the skyrimse game exe (isGame),
 // launched directly (no store); override isGame/store/defaultPrimary to model store/tool/SE launches.
 export function makeStarterInfo(overrides: Partial<IStarterInfo> = {}): IStarterInfo {
@@ -387,6 +699,13 @@ export function makeInstallState(
   };
 }
 
+/** Set or clear the active collection-install session on a harness store. */
+export function setCollectionSession(harness: IApiHarness, active: boolean): void {
+  harness.setState((draft) => {
+    draft.session.collections.activeSession = active ? makeSession() : undefined;
+  });
+}
+
 /**
  * Assemble a session's `mods` map from a compact list, keyed by an explicit ruleId.
  * Saves tests from spelling out a full ICollectionModInstallInfo per member mod.
@@ -443,7 +762,7 @@ export function makeModHealthCheck(
     category: HealthCheckCategory.Mods,
     severity: HealthCheckSeverity.Warning,
     triggers: [HealthCheckTrigger.Manual],
-    checkMod: async () => makeHealthCheckResult(),
+    checkMod: () => Promise.resolve(makeHealthCheckResult()),
     ...overrides,
   };
 }
@@ -452,7 +771,7 @@ export function makeModCheckContext(overrides: Partial<IModCheckContext> = {}): 
   return {
     modId: "mod-1",
     files: [],
-    readFile: async () => Buffer.alloc(0),
+    readFile: () => Promise.resolve(Buffer.alloc(0)),
     attributes: {},
     ...overrides,
   };
@@ -541,24 +860,6 @@ export function makeRevision(
 export type { CollectionModStatus };
 
 const BATCH_TYPE: string = (batch as unknown as { getType: () => string }).getType();
-const sessionReducers = trackingReducer.reducers as Record<
-  string,
-  (state: ICollectionInstallState, payload: unknown) => ICollectionInstallState
->;
-// the real mods reducer, applied to state.persistent.mods so the durable writes the driver
-// makes alongside the session (addModRule with `ignored`, setModAttribute install-spec stamps)
-// are observable by read-back, not just recordable as dispatched actions. keyed by gameId.
-type ModsSlice = Record<string, Record<string, IMod>>;
-const modsReducers = modsReducer.reducers as Record<
-  string,
-  (state: ModsSlice, payload: unknown) => ModsSlice
->;
-// the real download reducer, applied to state.persistent.downloads, so writes onto a download's
-// modInfo (the collection-rule tags the install path records) are observable by read-back
-const downloadReducers = downloadStateReducer.reducers as Record<
-  string,
-  (state: IState["persistent"]["downloads"], payload: unknown) => IState["persistent"]["downloads"]
->;
 
 function makeDriverState(overrides: Partial<IDriverHarnessState> = {}): IState {
   const slices: IDriverHarnessState = {
@@ -569,6 +870,10 @@ function makeDriverState(overrides: Partial<IDriverHarnessState> = {}): IState {
     knownGames: [],
     availableExtensions: [],
     userInfo: undefined,
+    activeProfileId: undefined,
+    lastActiveProfile: {},
+    installPath: {},
+    discovered: {},
     ...overrides,
   };
   // a structurally-partial IState holding only the slices the driver reads; the single cast
@@ -579,6 +884,7 @@ function makeDriverState(overrides: Partial<IDriverHarnessState> = {}): IState {
       downloads: { files: slices.downloads },
       profiles: slices.profiles,
       collections: { collections: {}, revisions: {} },
+      deployment: { needToDeploy: {} },
       nexus: { ...nexusPersistentReducer.defaults, userInfo: slices.userInfo },
     },
     // a download path is inherently a signed-in one, and isLoggedIn dereferences account
@@ -594,12 +900,14 @@ function makeDriverState(overrides: Partial<IDriverHarnessState> = {}): IState {
       // download path pattern so downloadPathForGame resolves a concrete per-game folder
       downloads: { collectionsInstallWhileDownloading: false, path: "{USERDATA}\\downloads" },
       interface: { language: "en", foregroundDL: false },
-      gameMode: { discovered: {} },
-      // empty skeletons so tests can assign settings.mods.installPath[gameId] /
-      // settings.profiles.activeProfileId through the typed draft without a cast (the single
-      // as-unknown-as-IState below covers the omitted fields)
-      mods: { installPath: {} },
-      profiles: { activeProfileId: undefined, nextProfileId: undefined, lastActiveProfile: {} },
+      gameMode: { discovered: slices.discovered },
+      mods: { installPath: slices.installPath, activator: {} },
+      profiles: {
+        activeProfileId: slices.activeProfileId,
+        // a started profile has no switch in flight
+        nextProfileId: slices.activeProfileId,
+        lastActiveProfile: slices.lastActiveProfile,
+      },
     },
   } as unknown as IState;
 }
@@ -610,7 +918,10 @@ function makeDriverState(overrides: Partial<IDriverHarnessState> = {}): IState {
  * covered by the game-extension vortex-api mocks). vitest isolates these per test file, and
  * registration is idempotent.
  */
-function registerHarnessGame(gameId: string): void {
+const harnessGames = new Set<string>();
+
+export function registerHarnessGame(gameId: string): void {
+  harnessGames.add(gameId);
   const gameReg = local<{
     gameModeManager: unknown;
     extensionGames: IGame[];
@@ -625,20 +936,18 @@ function registerHarnessGame(gameId: string): void {
       id: gameId,
       name: gameId,
       queryModPath: () => "mods",
+      // resolveGameVersion validates the game (executable) and tries
+      // game.getGameVersion first; provide both so tests don't fall through to
+      // exe-version probing of a nonexistent binary
+      executable: () => `${gameId}.exe`,
+      getGameVersion: () => Promise.resolve("1.0.0"),
     } as unknown as IGame);
-  }
-
-  const gvReg = local<{
-    gameVersionManager: { getGameVersion: () => Promise<string> } | undefined;
-  }>("gameversion-manager", { gameVersionManager: undefined });
-  if (gvReg.gameVersionManager === undefined) {
-    gvReg.gameVersionManager = { getGameVersion: () => Promise.resolve("1.0.0") };
   }
 }
 
 /**
  * Clear the process-`local` registries registerHarnessGame populates. The registries live on
- * the worker global, so without this a fake game (or version manager) registered by one test
+ * the worker global, so without this a fake game registered by one test
  * would persist and could mask a different test's expectation. Call from afterEach.
  */
 export function resetHarnessRegistries(): void {
@@ -652,12 +961,31 @@ export function resetHarnessRegistries(): void {
     extensionStubs: [],
   });
   gameReg.extensionGames.length = 0;
-
-  const gvReg = local<{ gameVersionManager: unknown }>("gameversion-manager", {
-    gameVersionManager: undefined,
-  });
-  gvReg.gameVersionManager = undefined;
 }
+
+/**
+ * A reducer spec bound to the state path it owns: the production IExtensionReducer shape, so a
+ * domain harness binds its extension's reducers the way the extension registers them.
+ */
+export type IHarnessReducerBinding = IExtensionReducer;
+
+// the real reducers every harness applies, bound to the slices they own
+const DEFAULT_BINDINGS: IHarnessReducerBinding[] = [
+  { path: ["session", "collections"], reducer: trackingReducer },
+  { path: ["persistent", "mods"], reducer: modsReducer },
+  { path: ["session", "nexus"], reducer: nexusSessionReducer },
+  { path: ["persistent", "nexus"], reducer: nexusPersistentReducer },
+  { path: ["confidential", "account", "nexus"], reducer: nexusAccountReducer },
+  { path: ["persistent", "downloads"], reducer: downloadStateReducer },
+];
+
+// carries the setState escape hatch through the store as a whole-state replacement dispatch
+const REPLACE_TYPE = "__harness_replace_state";
+// a watched value no state can hold, so the first change always reaches the callback
+const UNSEEN_STATE_VALUE = Symbol("unseen state value");
+// the production hydration action: each bound slice becomes the payload's value at its path,
+// merged over the spec's defaults
+const HYDRATE_REPLACE_TYPE = "__hydrate_replace";
 
 /**
  * A controllable fake IExtensionApi over a seeded, structurally-partial IState. This is the
@@ -665,70 +993,79 @@ export function resetHarnessRegistries(): void {
  *
  * - `events` is a real EventEmitter, so `emit(...)` actually runs any `on`/`onAsync` listeners
  *   (a vi.fn() stub could not).
- * - `dispatch` applies the real install-tracking reducer to `state.session.collections` AND the
- *   real mods reducer to `state.persistent.mods` (so both the session and durable writes are
- *   observable by read-back), and records every action (so writes with no harness reducer are
- *   still assertable). Batched actions are unwrapped.
- * - the persistent / session slices are seeded from `overrides` (builder-style) and can be
- *   mutated mid-test via `setState`.
+ * - `dispatch` drives a real redux store whose reducer folds the specs bound in DEFAULT_BINDINGS
+ *   (install tracking, mods, downloads, nexus) over the slices they own, and records every
+ *   action (so writes with no harness reducer are still assertable). Batches are unwrapped.
+ * - the persistent / session slices are seeded from `overrides` (builder-style); `setState`
+ *   applies a draft mutation as a whole-state replacement dispatch.
+ * - `extraReducers` lets a domain harness (e.g. gamebryo) bind its extension's reducer specs
+ *   to the slices they own, so its writes are observable by read-back too.
  */
-export function makeApiHarness(overrides: Partial<IDriverHarnessState> = {}): IApiHarness {
-  const state = makeDriverState(overrides);
-  const dispatched: ITrackedAction[] = [];
+export function makeApiHarness(
+  overrides: Partial<IDriverHarnessState> = {},
+  extraReducers: IHarnessReducerBinding[] = [],
+): IApiHarness {
+  const bindings = [...DEFAULT_BINDINGS, ...extraReducers];
+  // the production reducer composition: addToTree places each spec at its path, deriveReducer
+  // turns the tree into one reducer, and its safeCombineReducers layers preserve the reducerless
+  // seeded slices. Verifier findings are ignored - test seeds are deliberately partial.
+  const tree = {};
+  for (const binding of bindings) {
+    addToTree(tree, binding.path, binding.reducer);
+  }
+  const derived: (state: IState, action: ITrackedAction) => IState = deriveReducer(
+    "",
+    tree,
+    () => Decision.IGNORE,
+    (err: Error) => {
+      throw err;
+    },
+  );
+  const rootReducer = (state: IState, action: ITrackedAction): IState =>
+    action.type === REPLACE_TYPE ? (action.payload as IState) : derived(state, action);
 
-  const apply = (action: ITrackedAction | null | undefined): void => {
-    if (action == null) {
-      return;
-    }
-    // redux-act batches several actions into one; unwrap so each is applied + recorded
+  const initialState = makeDriverState(overrides);
+  // seed a discovery entry for every registered harness game the seed left undiscovered, so
+  // the real resolveGameVersion (getInstalledVersion proxy) passes its validity check; a game
+  // seeded with its own path keeps it
+  for (const gameId of harnessGames) {
+    initialState.settings.gameMode.discovered[gameId] ??= {
+      path: `C:/games/${gameId}`,
+      name: gameId,
+    } as IDiscoveryResult;
+  }
+
+  const dispatched: ITrackedAction[] = [];
+  // redux-act batches several actions into one; unwrap so each is recorded individually (the
+  // derived reducers unwrap batches themselves)
+  const record = (action: ITrackedAction): void => {
     if (action.type === BATCH_TYPE && Array.isArray(action.payload)) {
-      (action.payload as ITrackedAction[]).forEach(apply);
+      (action.payload as ITrackedAction[]).forEach(record);
       return;
     }
     dispatched.push(action);
-    const sessionReducer = sessionReducers[action.type];
-    if (sessionReducer !== undefined) {
-      state.session.collections = sessionReducer(state.session.collections, action.payload);
-    }
-    const modsReducerFn = modsReducers[action.type];
-    if (modsReducerFn !== undefined) {
-      state.persistent.mods = modsReducerFn(state.persistent.mods, action.payload);
-    }
-    const nexusSession = nexusSessionReducer.reducers[action.type];
-    if (nexusSession !== undefined) {
-      state.session["nexus"] = nexusSession(state.session["nexus"], action.payload);
-    }
-    const nexusPersistent = nexusPersistentReducer.reducers[action.type];
-    if (nexusPersistent !== undefined) {
-      state.persistent["nexus"] = nexusPersistent(state.persistent["nexus"], action.payload);
-    }
-    const downloadReducerFn = downloadReducers[action.type];
-    if (downloadReducerFn !== undefined) {
-      state.persistent.downloads = downloadReducerFn(state.persistent.downloads, action.payload);
-    }
   };
+  // sits behind the same thunk middleware the production store applies, so only plain actions
+  // arrive here; the two harness bookkeeping actions stay out of the record
+  const recorder: Middleware = () => (next) => (action) => {
+    const tracked = action as ITrackedAction;
+    if (tracked.type !== REPLACE_TYPE && tracked.type !== HYDRATE_REPLACE_TYPE) {
+      record(tracked);
+    }
+    return next(tracked);
+  };
+  const store = createStore(rootReducer, initialState, applyMiddleware(thunkMiddleware, recorder));
+  // the production state-watching mechanism over the harness store, backing api.onStateChange.
+  // setState is a real dispatch, so watchers registered before a setState fire on it. Unlike
+  // production's stateChangeHandler wrapper, watcher errors fail loud instead of being logged.
+  const watcher = new ReduxWatcher<IState>(store, (err) => {
+    throw err;
+  });
+  // seed every bound slice: its spec's defaults under whatever makeDriverState placed there
+  // from the overrides. Slices with no seed get plain defaults from the store's INIT dispatch.
+  store.dispatch({ type: HYDRATE_REPLACE_TYPE, payload: store.getState() });
 
-  // store subscribers, for code that watches the store directly rather than via onStateChange
-  const subscribers: Array<() => void> = [];
-  const notifySubscribers = () => {
-    subscribers.slice().forEach((listener) => listener());
-  };
-
-  const subscribe = (listener: () => void) => {
-    subscribers.push(listener);
-    return () => {
-      const idx = subscribers.indexOf(listener);
-      if (idx !== -1) {
-        subscribers.splice(idx, 1);
-      }
-    };
-  };
-
-  const dispatch = (action: ITrackedAction) => {
-    apply(action);
-    notifySubscribers();
-    return action;
-  };
+  const dispatch = (action: ITrackedAction) => store.dispatch(action);
 
   const events = new EventEmitter();
   events.setMaxListeners(0);
@@ -737,21 +1074,48 @@ export function makeApiHarness(overrides: Partial<IDriverHarnessState> = {}): IA
   const dialogCalls: Array<{ type: DialogType; title: string }> = [];
   const errorNotifications: IApiHarness["errorNotifications"] = [];
   const notifications: IApiHarness["notifications"] = [];
+  const dismissedNotifications: IApiHarness["dismissedNotifications"] = [];
+  const historyEntries: IApiHarness["historyEntries"] = [];
+  const showHistoryCalls: IApiHarness["showHistoryCalls"] = [];
+  const runExecutableCalls: IApiHarness["runExecutableCalls"] = [];
+  let runProcess = (_options: IRunOptions): Promise<void> => Promise.resolve();
 
   const api = {
-    getState: () => state,
-    store: { getState: () => state, dispatch, subscribe },
+    getState: () => store.getState(),
+    store: {
+      getState: () => store.getState(),
+      dispatch,
+      subscribe: (listener: () => void) => store.subscribe(listener),
+    },
     events,
     // a driver registers will-install-mod via onAsync; route it onto the same bus so a
     // plain emit() runs it (the returned promise is ignored, which is fine for assertions)
     onAsync: (event: string, cb: (...args: unknown[]) => unknown) => {
       events.on(event, cb);
     },
-    onStateChange: () => undefined,
-    sendNotification: (notification: { type: string; message: string }) => {
-      notifications.push(notification);
+    onStateChange: (statePath: string[], cb: (previous: unknown, current: unknown) => void) => {
+      // a dispatch inside a callback replays the change being handled; skipped, as in production
+      let lastValue: unknown = UNSEEN_STATE_VALUE;
+      watcher.on(statePath, ({ prevValue, currentValue }) => {
+        if (lastValue !== UNSEEN_STATE_VALUE && currentValue === lastValue) {
+          return;
+        }
+        lastValue = currentValue;
+        cb(prevValue, currentValue);
+      });
     },
-    dismissNotification: () => undefined,
+    sendNotification: (notification: INotification) => {
+      notifications.push(notification);
+      return notification.id ?? "test-notification";
+    },
+    runExecutable: (executable: string, args: string[], options: IRunOptions) => {
+      runExecutableCalls.push({ executable, args, options });
+      return runProcess(options);
+    },
+    genMd5Hash: () => Promise.resolve({ md5sum: "test-md5", numBytes: 0 }),
+    dismissNotification: (id: string) => {
+      dismissedNotifications.push(id);
+    },
     showErrorNotification: (
       title: string,
       message: unknown,
@@ -768,8 +1132,21 @@ export function makeApiHarness(overrides: Partial<IDriverHarnessState> = {}): IA
       dialogCalls.push({ type, title });
       return Promise.resolve(nextDialog);
     },
-    translate: (key: string) => key,
-    ext: { awaitProfileSwitch: () => Promise.resolve() },
+    // interpolates {{name}} placeholders like the real translate, so assertions see the names
+    translate: (key: string, options?: { replace?: Record<string, string | number | boolean> }) =>
+      Object.entries(options?.replace ?? {}).reduce(
+        (text, [name, value]) => text.replaceAll(`{{${name}}}`, String(value)),
+        key,
+      ),
+    ext: {
+      awaitProfileSwitch: () => Promise.resolve(),
+      addToHistory: (stack: string, entry: IHistoryEvent) => {
+        historyEntries.push({ stack, entry });
+      },
+      showHistory: (stackId: string) => {
+        showHistoryCalls.push(stackId);
+      },
+    },
     emitAndAwait: () => Promise.resolve([]),
   } as unknown as IExtensionApi;
 
@@ -779,10 +1156,16 @@ export function makeApiHarness(overrides: Partial<IDriverHarnessState> = {}): IA
     emit: (event: string, ...args: unknown[]) => {
       events.emit(event, ...args);
     },
-    getState: () => state,
+    emitAndAwait: async (event: string, ...args: unknown[]) => {
+      const listeners = events.listeners(event) as Array<(...listenerArgs: unknown[]) => unknown>;
+      await Promise.all(listeners.map((listener) => listener(...args)));
+    },
+    getState: () => store.getState(),
     setState: (mutate: (draft: IState) => void) => {
-      mutate(state);
-      notifySubscribers();
+      // copy-on-write
+      const draft = structuredClone(store.getState());
+      mutate(draft);
+      store.dispatch({ type: REPLACE_TYPE, payload: draft });
     },
     setNextDialog: (result: IDialogResult) => {
       nextDialog = result;
@@ -790,30 +1173,187 @@ export function makeApiHarness(overrides: Partial<IDriverHarnessState> = {}): IA
     dialogCalls,
     errorNotifications,
     notifications,
+    dismissedNotifications,
+    historyEntries,
+    showHistoryCalls,
+    runExecutableCalls,
+    setRunProcess: (run) => {
+      runProcess = run;
+    },
   };
 }
 
 /**
- * A file-based load order harness: a fake api seeded with an active profile and the game's mods,
- * plus an UpdateSet constructed against it. UpdateSet is injected so builders.ts stays free of the
- * renderer view layer, mirroring makeDriverHarness.
+ * The staging folder a harness seeds for a game
  */
-export function makeFbloHarness(
-  UpdateSetCtor: new (api: IExtensionApi, isFBLO: (gameId: string) => boolean) => UpdateSet,
-  opts: IFbloHarnessOpts = {},
-): IFbloHarness {
+export function harnessStagingPath(gameId: string): string {
+  return path.join(os.tmpdir(), "vortex-staging", gameId);
+}
+
+/**
+ * A fake api seeded with an active profile on a game (active + last-active set in state), the
+ * game's installed mods and its staging folder: the shared base the game-scoped domain harnesses
+ * build on.
+ */
+export function makeGameHarness(
+  opts: IGameHarnessOpts = {},
+  extraReducers: IHarnessReducerBinding[] = [],
+): IGameHarness {
   const gameId = opts.gameId ?? "skyrimse";
   const profileId = opts.profileId ?? "profile-1";
-  const base = makeApiHarness({
-    profiles: { [profileId]: makeProfile({ id: profileId, gameId }) },
-    mods: { [gameId]: opts.mods ?? {} },
-  });
+  const stagingPath = opts.installPath?.[gameId] ?? harnessStagingPath(gameId);
+  const gamePath = opts.gamePath;
+  registerHarnessGame(gameId);
+  const base = makeApiHarness(
+    {
+      profiles: { [profileId]: makeProfile({ id: profileId, gameId }) },
+      mods: { [gameId]: opts.mods ?? {} },
+      activeProfileId: profileId,
+      lastActiveProfile: { [gameId]: profileId },
+      installPath: { ...opts.installPath, [gameId]: stagingPath },
+      discovered: gamePath !== undefined ? { [gameId]: { path: gamePath } } : {},
+    },
+    extraReducers,
+  );
+  if (opts.instanceId !== undefined || opts.activatorId !== undefined) {
+    base.setState((draft) => {
+      if (opts.instanceId !== undefined) {
+        draft.app = { ...draft.app, instanceId: opts.instanceId };
+      }
+      if (opts.activatorId !== undefined) {
+        draft.settings.mods.activator = { [gameId]: opts.activatorId };
+      }
+    });
+  }
+  const dataPath = gamePath !== undefined ? getGame(gameId).getModPaths(gamePath)[""] : undefined;
+  return { ...base, gameId, profileId, stagingPath, dataPath };
+}
+
+/**
+ * The real profile_management extension over a fake api, for driving profile switches through
+ * state.
+ */
+export async function makeProfileSwitchHarness(
+  init: (context: IExtensionContext) => boolean,
+  opts: IProfileSwitchOpts,
+): Promise<IProfileSwitchHarness> {
+  const gameIds = [...new Set(opts.profiles.map((profile) => profile.gameId))];
+  gameIds.forEach(registerHarnessGame);
+
+  const gameRoot = await mkdtemp(path.join(os.tmpdir(), "vortex-profile-switch-"));
+  const gameSettingsPath = (gameId: string) => path.join(gameRoot, gameId, "settings.ini");
+  const profileDir = (profileId: string) => {
+    const profile = opts.profiles.find((candidate) => candidate.id === profileId);
+    if (profile === undefined) {
+      throw new Error(`unknown profile ${profileId}`);
+    }
+    return profilePath(profile);
+  };
+  const savedSettingsPath = (profileId: string) => path.join(profileDir(profileId), "settings.ini");
+  const writeSettings = async (filePath: string, content: string) => {
+    await mkdir(path.dirname(filePath), { recursive: true });
+    await writeFile(filePath, content);
+  };
+  const readSettings = (filePath: string) =>
+    readFile(filePath, "utf8").catch((): undefined => undefined);
+  for (const [gameId, content] of Object.entries(opts.gameSettings ?? {})) {
+    await writeSettings(gameSettingsPath(gameId), content);
+  }
+  for (const [profileId, content] of Object.entries(opts.savedSettings ?? {})) {
+    await writeSettings(savedSettingsPath(profileId), content);
+  }
+
+  const base = makeApiHarness(
+    { profiles: Object.fromEntries(opts.profiles.map((profile) => [profile.id, profile])) },
+    [
+      // the switch is driven through next/active/last-active profile and the per-game pending flag
+      { path: ["settings", "profiles"], reducer: profileSettingsReducer },
+      { path: ["persistent", "deployment"], reducer: deploymentReducer },
+    ],
+  );
   base.setState((draft) => {
-    draft.settings.profiles.activeProfileId = profileId;
-    draft.settings.profiles.lastActiveProfile = { [gameId]: profileId };
+    draft.settings.profiles = {
+      activeProfileId: opts.activeProfileId,
+      nextProfileId: opts.activeProfileId,
+      lastActiveProfile: { ...opts.lastActive },
+    };
+    draft.persistent.deployment.needToDeploy = { ...opts.needToDeploy };
+    draft.session.base = { ...draft.session.base, commandLine: {} };
   });
-  const updateSet = new UpdateSetCtor(base.api, opts.isFBLO ?? (() => true));
-  return { ...base, updateSet, gameId, profileId };
+
+  const { store } = base.api;
+  const deployed: string[] = [];
+  base.api.events.on(
+    "deploy-mods",
+    (
+      cb: (err: Error | null) => void,
+      profileId: string,
+      _progress?: unknown,
+      deployOptions?: IDeployOptions,
+    ) => {
+      deployed.push(profileId);
+      const gameId = base.getState().persistent.profiles[profileId]?.gameId;
+      const failure = opts.failingDeploys?.[VortexProfileId(profileId)];
+      if (failure !== undefined) {
+        // the real deployment notifies and only hands the error on when asked to
+        store.dispatch(setDeploymentNecessary(gameId, true));
+        cb(deployOptions?.failOnError ? failure : null);
+        return;
+      }
+      // stands in for the per-profile config a deployment generates (plugins.txt and the like)
+      void writeSettings(gameSettingsPath(gameId), `deployed:${profileId}`).then(() => {
+        store.dispatch(setDeploymentNecessary(gameId, false));
+        cb(null);
+      });
+    },
+  );
+
+  const onceCallbacks: Array<() => void> = [];
+  const registered: Record<string, unknown> = {
+    api: base.api,
+    once: (cb: () => void) => onceCallbacks.push(cb),
+  };
+  // every other register* call is irrelevant to switching, so it is a no-op
+  const context = new Proxy(registered, {
+    get: (target, prop: string) => (prop in target ? target[prop] : () => undefined),
+  }) as unknown as IExtensionContext;
+  const logStart = vi.mocked(window.api).log.mock.calls.length;
+  init(context);
+  gameIds.forEach((gameId) => context.registerProfileFile(gameId, gameSettingsPath(gameId)));
+  const nextProfileChange = () =>
+    new Promise<void>((resolve) => {
+      base.api.events.once("profile-did-change", () => resolve());
+    });
+  // startup saves the active profile's files, then announces the profile
+  const started = nextProfileChange();
+  onceCallbacks.forEach((cb) => cb());
+  await started;
+
+  return {
+    ...base,
+    deployed,
+    switchTo: (profileId: string) => {
+      const switched = nextProfileChange();
+      store.dispatch(setNextProfile(profileId));
+      return switched;
+    },
+    profileChanged: nextProfileChange,
+    gameSettings: (gameId: string) => readSettings(gameSettingsPath(gameId)),
+    savedSettings: (profileId: string) => readSettings(savedSettingsPath(profileId)),
+    // test-setup stubs window.api.log with a vi.fn, so its calls are the renderer's log
+    loggedMessages: () =>
+      vi
+        .mocked(window.api)
+        .log.mock.calls.slice(logStart)
+        .map((call) => String(call[1])),
+    cleanup: async () => {
+      await Promise.all(
+        [gameRoot, ...opts.profiles.map(profilePath)].map((dir) =>
+          rm(dir, { recursive: true, force: true }),
+        ),
+      );
+    },
+  };
 }
 
 /**
@@ -868,11 +1408,11 @@ export function makeInstallManagerHarness(
   gameId = "skyrimse",
 ): IInstallManagerHarness {
   registerHarnessGame(gameId);
-  const base = makeApiHarness(overrides);
-  base.setState((draft) => {
-    draft.settings.mods.installPath[gameId] = `C:/staging/${gameId}`;
+  const base = makeApiHarness({
+    installPath: { [gameId]: harnessStagingPath(gameId) },
+    ...overrides,
   });
-  const manager = new ManagerCtor(base.api, (gid: string) => `C:/staging/${gid}`);
+  const manager = new ManagerCtor(base.api, harnessStagingPath);
   // single seam: reach the manager's private phase map once here so suites get a typed handle
   // instead of casting the manager per test
   const phaseTracker = (manager as unknown as { mPhaseTracker: InstallPhaseTracker }).mPhaseTracker;
@@ -951,10 +1491,8 @@ export function makeHealthCheckHarness(
   const profileId = opts.profileId ?? "profile-1";
   const base = makeApiHarness({
     profiles: { [profileId]: makeProfile({ id: profileId, gameId }) },
-  });
-  base.setState((draft) => {
-    draft.settings.profiles.activeProfileId = profileId;
-    draft.settings.profiles.lastActiveProfile = { [gameId]: profileId };
+    activeProfileId: profileId,
+    lastActiveProfile: { [gameId]: profileId },
   });
 
   const registry = new RegistryCtor(base.api);
@@ -1021,7 +1559,7 @@ export function makeHealthCheckHarness(
         gameId: checkGameId,
         name: id,
         triggers: [HealthCheckTrigger.ModsChanged, HealthCheckTrigger.Manual],
-        checkMod: async () => makeHealthCheckResult({ checkId: id }),
+        checkMod: () => Promise.resolve(makeHealthCheckResult({ checkId: id })),
       }),
     );
     return id;
@@ -1203,6 +1741,38 @@ export function makeLoadOrderEntry(overrides: Partial<ILoadOrderEntry> = {}): IL
   };
 }
 
+/** A load order registration whose functors do nothing; defaults to an id-less order for "skyrim". */
+export function makeLoadOrderGameInfo(
+  overrides: Partial<ILoadOrderGameInfo> = {},
+): ILoadOrderGameInfo {
+  return {
+    gameId: "skyrim",
+    serializeLoadOrder: () => Promise.resolve(),
+    deserializeLoadOrder: () => Promise.resolve([]),
+    validate: () => Promise.resolve(undefined),
+    ...overrides,
+  };
+}
+
+/** A load order of default entries with the given ids, in that order. */
+export function makeLoadOrder(...entryIds: string[]): LoadOrder {
+  return entryIds.map((id) => makeLoadOrderEntry({ id }));
+}
+
+/** A load order registration as the registry stores it, from an official extension. */
+export function makeRegisteredLoadOrder(
+  overrides: Partial<ILoadOrderGameInfo> = {},
+): IRegisteredLoadOrder {
+  return resolveEntry(makeLoadOrderGameInfo(overrides), false);
+}
+
+/** A failed load order validation with one invalid entry. */
+export function makeValidationResult(
+  overrides: Partial<IValidationResult> = {},
+): IValidationResult {
+  return { invalid: [{ id: "entry-1.pak", reason: "missing master" }], ...overrides };
+}
+
 /**
  * The shared api harness plus an observable Nexus connection, for the nxm protocol handler.
  * Defaults to one known game so an nxm domain resolves without every suite spelling that out.
@@ -1233,10 +1803,16 @@ export function makeNxmHarness(opts: Partial<IDriverHarnessState> = {}): INxmHar
   return {
     ...base,
     nexus,
-    freeUserQueue: () => base.getState().session["nexus"].freeUserDLQueue ?? [],
+    freeUserQueue: () => {
+      const nexusSession = base.getState().session["nexus"] as { freeUserDLQueue?: string[] };
+      return nexusSession.freeUserDLQueue ?? [];
+    },
     setUserInfo: (userInfo) => {
       base.setState((draft) => {
-        draft.persistent["nexus"].userInfo = userInfo;
+        const nexusPersistent = draft.persistent["nexus"] as {
+          userInfo?: Partial<IValidateKeyDataV2>;
+        };
+        nexusPersistent.userInfo = userInfo;
       });
     },
     getDownloadURLs,

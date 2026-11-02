@@ -47,7 +47,7 @@ export interface ExtensionInfo {
   bundled?: boolean;
   /** @deprecated not read from info.json anymore */
   path?: string;
-  /** @deprecated not read from info.json anymore */
+  /** @deprecated only read to re-link extensions installed before Vortex 2.7 */
   modId?: number;
   /** @deprecated not read from info.json anymore */
   fileId?: number;
@@ -65,7 +65,8 @@ export type IExtensionWithState = IExtensionState & {
 export interface IExtensionDownloadInfo {
   name: string;
   modId: number;
-  fileId: number;
+  // game stubs and bare nxm://site/mods/<id> links only know the mod; resolved from the catalog
+  fileId?: number;
 }
 
 /**
@@ -91,7 +92,7 @@ export interface IAvailableExtension {
   gameDomain?: string;
   /** game display name, resolved from the local Nexus games list */
   gameName?: string;
-  /** locale code, translations only, derived from the mod name */
+  /** BCP 47 locale code, translations only */
   language?: string;
 }
 

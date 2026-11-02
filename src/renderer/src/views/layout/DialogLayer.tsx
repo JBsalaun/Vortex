@@ -3,6 +3,7 @@ import { useDispatch, useSelector } from "react-redux";
 
 import { setDialogVisible } from "../../actions/session";
 import type { IState } from "../../types/IState";
+import { ModalLayer } from "../components/modal_layer/ModalLayer";
 import { Dialog } from "../Dialog";
 import { DialogContainer } from "../DialogContainer";
 import { OverlayContainer } from "../OverlayContainer";
@@ -25,6 +26,8 @@ export const DialogLayer: FC<React.PropsWithChildren<unknown>> = (): JSX.Element
   return (
     <>
       <Dialog />
+
+      <ModalLayer />
 
       <DialogContainer visibleDialog={visibleDialog} onHideDialog={onHideDialog} />
 

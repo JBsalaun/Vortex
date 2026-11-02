@@ -46,6 +46,11 @@ vi.mock("fs", () => ({
   },
 }));
 
+vi.mock("./getVolumePath", async () => {
+  const winapi = await import("winapi-bindings");
+  return { getVolumePath: winapi.GetVolumePathName };
+});
+
 vi.mock("winapi-bindings", () => ({
   GetVolumePathName: vi.fn((input: string) => {
     const res = path.dirname(input);

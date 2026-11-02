@@ -60,6 +60,8 @@ build/test/format loop.
 
 ## Imports
 
+Prefer `@/` imports over relative imports, especially for deeply nested files.
+
 - `oxfmt` owns import grouping and ordering (external, then `@/` alias, then
   relative, alphabetical within each group). Don't fight it; run
   `pnpm run format`.
@@ -82,6 +84,163 @@ build/test/format loop.
 - Shared components also expose semantic `nxm-`-prefixed classes
   (`nxm-tab-button`). Keep that pattern for reusable primitives.
 
+### Text
+
+`Typography` (`src/renderer/src/ui/components/typography/Typography.tsx`) styles
+a **block** of text, and everything inside it inherits that style. `as` picks the
+element for its meaning only; `typographyType` picks the style, `body-md` unless
+given.
+
+A body style is normal weight. For Design's Medium and Semi Bold variants, add
+`font-medium` (500) or `font-semibold` (600) to its `className`; the size, line
+height and letter spacing stay the body style's.
+
+```tsx
+<Typography className="font-medium" typographyType="body-sm">
+    Mods
+</Typography>
+```
+
+Wrap a list or a run of paragraphs in one `Typography`, and put plain elements
+inside:
+
+```tsx
+<Typography as="ul" className="list-inside list-disc space-y-2">
+  <li>First</li>
+  <li>Second</li>
+</Typography>
+
+<Typography as="div" className="space-y-2">
+  <p>First paragraph.</p>
+  <p>Second paragraph.</p>
+</Typography>
+```
+
+Not one per item:
+
+```tsx
+<ul>
+  <li><Typography as="span">First</Typography></li>
+  <li><Typography as="span">Second</Typography></li>
+</ul>
+
+<Typography>First paragraph.</Typography>
+<Typography>Second paragraph.</Typography>
+```
+
+Nest another `Typography` only where the style changes: a heading, a subdued
+line, a different size. One that changes only the colour takes
+`typographyType="inherit"`, so it keeps the parent's type style instead of
+resetting to `body-md`:
+
+```tsx
+<Typography as="div" className="space-y-2" typographyType="body-sm">
+    <p>
+        {`Some text, and `}
+        <Typography appearance="subdued" as="span" typographyType="inherit">
+            a subdued phrase
+        </Typography>
+        .
+    </p>
+</Typography>
+```
+
+### Scrims
+
+A scrim darkens a **backdrop** so whatever sits on top stays readable: game art
+behind a tile's title, the app behind a modal. Use `bg-scrim-*` (or
+`from-`/`via-`/`to-scrim-*` for a gradient) and colour the content on it with
+`text-on-scrim-*`, or `<Typography brand="neutral-on-scrim">`.
+
+A scrim is not the same thing as tinting a surface for state or depth - a row
+hover, an input fill, a pressed state. Those are overlays, and they use the
+`translucent-*` / `translucent-dark-*` ramps.
+
+The distinction matters because the two behave differently when the theme
+changes, and the names are the only thing carrying that:
+
+- **A scrim never flips.** A photograph needs darkening whether the UI is light
+  or dark, and a modal backdrop stays dark in a light theme. `--color-scrim-*`
+  and `--color-on-scrim-*` are built from fixed black and white, and themes
+  leave them alone - see `src/stylesheets/ui/themes/light.css`, which overrides
+  every other family and deliberately omits these two.
+- **An overlay must flip.** A wash that lightens a dark surface has to darken a
+  light one, or it stops reading as a state change at all.
+
+> [!IMPORTANT]
+> Text laid on a scrim must use `on-scrim-*`, not the ordinary text tokens. A
+> theme-relative colour like `text-neutral-strong` flips to dark in a light
+> theme, and the scrim beneath it does not - so the label disappears.
+
+Both ramps live in `src/stylesheets/ui/theme/colours.css`.
+`src/stylesheets/ui/elements/modal.css` and the gradient in
+`src/renderer/src/ui/components/game_tile/GameTile.tsx` are the two worked
+examples.
+
+#### Naming a scrim-aware prop
+
+Components name this after **what they paint, not what they sit on**, so the two
+halves of the idea stay tellable apart:
+
+- A component that _is_ a scrim - it paints the fill - takes
+  `appearance="scrim"`. `Pill` is the worked example, and the name matches the
+  `Appearance=Scrim` variant in Figma.
+- Something laid _on_ a scrim someone else painted draws from the `on-scrim`
+  ramp. `Typography`'s `brand="neutral-on-scrim"` is the worked example.
+
+That the two land on different props is deliberate rather than drift. `Pill`'s
+`appearance` is a whole treatment - fill, border, hover - and has to stay
+orthogonal to `brand`, because a branded icon on a scrim is a real combination.
+`Typography`'s `brand` picks a ramp and `appearance` picks a step within it, so
+for text the scrim really is just another ramp.
+
+Only the achromatic ramp has a scrim counterpart: the design system has
+`Neutral/Scrim`, but no `Success/Scrim`. That is why the Typography brand is
+spelled `neutral-on-scrim` - there is deliberately no way to ask for
+`success-on-scrim`. A branded icon on a scrim still takes its colour from the
+ordinary, theme-relative brand ramp, and will shift with the theme.
+
+## Motion
+
+Users can turn non-essential animation down: **Settings → Interface → Reduce motion**,
+which follows the OS `prefers-reduced-motion` preference until they set it themselves.
+The answer is published as `data-reduce-motion="true"` on `<html>`
+(`util/reduceMotion.ts`); the rules keyed off it live in
+`src/stylesheets/ui/theme/motion.css`.
+
+- **Reduced means instant, not gentler.** Don't swap movement for a fade - a state change
+  lands immediately. Neutralise a transition by starting it from its final state rather
+  than by zeroing the duration:
+  `enterFrom="translate-y-6 opacity-0 reduce-motion:translate-y-0 reduce-motion:opacity-100"`.
+  That leaves nothing to animate while keeping the duration a `Transition` reads to time
+  itself. Drop delays too (`reduce-motion:delay-0`) - there is nothing left to wait for.
+- Prefer `transition-*` **without** an explicit `duration-*`. Those resolve their
+  duration through `--default-transition-duration`, which the attribute overrides, so
+  they flatten for free. A `duration-*` utility sets the duration directly and survives
+  on purpose - a component that names its own duration often depends on it - so opt
+  decorative ones out with the `reduce-motion:` variant:
+  `transition-[width] duration-300 reduce-motion:duration-0`.
+- Custom keyframes live in `src/stylesheets/ui/theme/animations.css`, registered as
+  `--animate-*` theme entries. Take the duration from `--default-transition-duration` for
+  the same reason as above, so the animation flattens without needing its own rule in
+  `motion.css`. A _delay_ is timing rather than motion, so keep it - a loader held back so
+  it never flashes on a short wait should still be held back.
+- **Don't use Tailwind's `motion-reduce:` / `motion-safe:` variants.** They compile to
+  `prefers-reduced-motion` media queries, so they follow the OS and can't see the app's
+  own setting. `reduce-motion:` is the app-aware equivalent.
+- In JavaScript, use `useReduceMotion()` in components and `isReduceMotionActive()`
+  elsewhere - for movement computed in JS rather than declared in CSS: a scroll tween, an
+  autoplay interval, a staged sequence. Clear any "is animating" flag when the preference
+  is on rather than leaving it set; an animation that never runs never fires
+  `animationend`.
+- **Keep essential motion.** Spinners (`animate-spin`), and anything whose movement _is_
+  the information (a countdown ring, a progress bar's width), have to keep working - a
+  static spinner says nothing. Skeleton shimmer (`animate-pulse`) is not essential and is
+  switched off centrally.
+- Only the Tailwind/`nxm-` surface responds so far. The legacy SCSS
+  (`src/stylesheets/vortex/**`, bundled Bootstrap) compiles its durations in and is not
+  covered yet, so the classic toolbar's flashing buttons still flash.
+
 ## State (Redux)
 
 - `useSelector` with a **stable selector reference**: a module-level function,
@@ -93,6 +252,25 @@ build/test/format loop.
   Return primitives or stable refs and map to objects or nodes in the component.
 - Push a hot subscription down into a small leaf component so only it
   re-renders. See `HealthCheckMenuBadge` and `LastUpdated`.
+- For writing reducers, registering them and the deprecated `storeHelper`
+  path helpers, see [state.md](state.md).
+
+## API data (TanStack Query)
+
+Nexus Mods API data goes through TanStack Query, not Redux. The client's
+defaults are in `src/renderer/src/util/queryClient.ts`.
+
+- Queries and mutations are `queryOptions` and `mutationOptions` factories,
+  one directory each under
+  `src/renderer/src/extensions/nexus_integration/queries/` and `mutations/`.
+- A call with a side effect is a mutation, not a query, so it runs only when
+  called and is never cached. Asking for a download link records a download,
+  so it's a mutation.
+- Mutations aren't retried, which is TanStack's default: one that reached the
+  server before failing would run twice. Only set `retry` on one that's safe
+  to repeat.
+- Pass `skipToken` rather than `enabled: false` while a query's inputs aren't
+  ready, so its function never runs with them missing.
 
 ## i18n
 
@@ -108,11 +286,35 @@ label, so selecting a tab stopped working as soon as the label was translated.
 
 ## Icons
 
-- MDI paths from `@mdi/js`, mapped in `views/components/iconMap.ts` via
-  `getIconPath(name)`. Pages can pass an `mdi` path directly.
+- `<Icon name="settings" />` draws a Material Symbol from the variable font, by the
+  symbol's name. `filled`, `weight`, `grade` and `opticalSize` set the font's axes; `size` keeps
+  the same steps as for a path. `Icon` takes either `name` or `path`.
+- The whole font ships, so `name` takes any Material Symbol, and a name the font doesn't have
+  fails the typecheck.
+- A component's `icon` prop (`leftIcon`, `rightIcon`, `fallbackIcon` and so on) takes a symbol by
+  name (`icon="star"`), a symbol with its axes (`icon={{ name: "star", filled: true }}`), an SVG
+  path for the custom `nxm*` icons the font lacks (`icon={{ path: nxmMod }}`), or an element. The type
+  is `IIconProp` (`IIconSource` where an element makes no sense), from `Icon.tsx`. Legacy icon names,
+  which actions and extensions register with, resolve through `getIcon(name)` in
+  `views/components/icon_map/iconMap.ts`. Pages can pass a `menuIcon`, a symbol
+  or `{ path }`; an extension's own `mdi` path still works, but is deprecated in its favour.
+- An icon's `title` names it for screen readers; it isn't a tooltip. On a symbol it becomes the
+  `aria-label` and shows nothing on hover, by design. A path icon's SVG `<title>` happens to get
+  the browser's own hover text, but don't rely on that either. For text on hover, wrap the icon,
+  or the control it sits in, in `Tooltip` (`ui/components/tooltip/Tooltip.tsx`).
+  A decorative icon takes no `title`.
 - Custom SVGs must use the 24x24 viewBox the `Icon` component renders. To port a
   Material Symbols icon (`0 -960 960 960`): scale by 0.025 and offset absolute Y
   by +960. Keep it a single filled path with `fill="currentColor"`.
+
+## Modal buttons
+
+- The primary action is the default `Button`. A destructive one is `brand="danger"`.
+- Next to a primary action, a secondary one such as "Close" or "Cancel" is
+  `appearance="moderate" brand="neutral"`.
+- A secondary action that is the only button, such as "Close", is
+  `appearance="strong" brand="neutral"`, so it reads as the way out and not a dim
+  afterthought. `ModalLayer` does this for the dialogs it draws.
 
 ## Pages and extensions
 

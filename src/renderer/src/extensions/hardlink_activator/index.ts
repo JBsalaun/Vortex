@@ -5,7 +5,6 @@ import { getErrorCode, getErrorMessageOrDefault, unknownToError } from "@vortex/
 import PromiseBB from "bluebird";
 import type { TFunction } from "i18next";
 import turbowalk from "turbowalk";
-import * as winapi from "winapi-bindings";
 
 import { setSettingsPage } from "../../actions/session";
 import { log } from "../../logging";
@@ -13,6 +12,7 @@ import type { IExtensionApi, IExtensionContext } from "../../types/IExtensionCon
 import type { IGame } from "../../types/IGame";
 import type { IState } from "../../types/IState";
 import * as fs from "../../util/fs";
+import { getVolumePath } from "../../util/getVolumePath";
 import { installPathForGame } from "../../util/selectors";
 import type { IDiscoveryResult } from "../gamemode_management/types/IDiscoveryResult";
 import { getGame } from "../gamemode_management/util/getGame";
@@ -119,14 +119,12 @@ class DeploymentMethod extends LinkingDeployment {
           order: 5,
           solution: (t) => {
             let displayPath = modPaths[typeId];
-            if (process.platform === "win32") {
-              try {
-                displayPath = winapi.GetVolumePathName(modPaths[typeId]);
-              } catch {
-                log("warn", "Failed to resolve volume path", {
-                  path: modPaths[typeId],
-                });
-              }
+            try {
+              displayPath = getVolumePath(modPaths[typeId]);
+            } catch {
+              log("warn", "Failed to resolve volume path", {
+                path: modPaths[typeId],
+              });
             }
             return t(
               "Please go to Settings->Mods and set the mod staging folder to be on " +

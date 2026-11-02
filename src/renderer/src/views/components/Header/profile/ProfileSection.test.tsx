@@ -4,7 +4,7 @@ import React from "react";
 import type * as ReactReduxTypes from "react-redux";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { emit } = vi.hoisted(() => ({ emit: vi.fn() }));
+const { dispatch, emit } = vi.hoisted(() => ({ dispatch: vi.fn(), emit: vi.fn() }));
 
 vi.mock("@/ExtensionProvider", () => ({
   useExtensionContext: () => ({
@@ -32,15 +32,23 @@ const signedOut = () => ({
   persistent: {},
 });
 
+/** Credentials in hand but no account details — what an offline start leaves behind. */
+const unvalidated = () => ({
+  confidential: { account: { nexus: { APIKey: "an-api-key" } } },
+  persistent: { nexus: {} },
+});
+
 vi.mock("react-redux", async () => {
   const actual = await vi.importActual<typeof ReactReduxTypes>("react-redux");
 
   return {
     ...actual,
-    useDispatch: () => vi.fn(),
+    useDispatch: () => dispatch,
     useSelector: (selector: (state: unknown) => unknown) => selector(store.state),
   };
 });
+
+import { setOpenMainPage } from "@/actions/session";
 
 import { ProfileSection } from "./ProfileSection";
 
@@ -58,6 +66,7 @@ const openMenu = async (name: RegExp) => {
 
 describe("ProfileSection", () => {
   beforeEach(() => {
+    dispatch.mockClear();
     emit.mockClear();
   });
 
@@ -80,10 +89,25 @@ describe("ProfileSection", () => {
       await openMenu(/ada/i);
 
       expect(screen.getByRole("menuitem", { name: "View profile on web" })).toBeInTheDocument();
+      expect(screen.getByRole("menuitem", { name: "Settings" })).toBeInTheDocument();
       expect(screen.getByRole("menuitem", { name: "Refresh user info" })).toBeInTheDocument();
       expect(screen.getByRole("menuitem", { name: "Help" })).toBeInTheDocument();
       expect(screen.getByRole("menuitem", { name: "Logout" })).toBeInTheDocument();
       expect(screen.queryByRole("menuitem", { name: /send feedback/i })).not.toBeInTheDocument();
+    });
+
+    it("lists Settings directly after the profile link", async () => {
+      await openMenu(/ada/i);
+
+      const labels = screen.getAllByRole("menuitem").map((item) => item.textContent);
+      expect(labels.indexOf("Settings")).toBe(labels.indexOf("View profile on web") + 1);
+    });
+
+    it("opens the Vortex settings page from the Settings row", async () => {
+      await openMenu(/ada/i);
+      await userEvent.click(screen.getByRole("menuitem", { name: "Settings" }));
+
+      expect(dispatch).toHaveBeenCalledWith(setOpenMainPage("application_settings", false));
     });
 
     it("groups the rows as it did before", async () => {
@@ -139,6 +163,38 @@ describe("ProfileSection", () => {
 
       expect(screen.queryByRole("menuitem", { name: /profile/i })).not.toBeInTheDocument();
       expect(screen.queryByRole("menuitem", { name: /logout/i })).not.toBeInTheDocument();
+    });
+  });
+
+  // The credentials say signed in, so the premium slot won't offer a login button. Logging out
+  // here is the only way back to one, so the menu has to open on a generic account.
+  describe("signed in but not validated", () => {
+    beforeEach(() => {
+      store.state = unvalidated();
+    });
+
+    it("names the trigger generically", () => {
+      render(<ProfileSection />);
+      expect(screen.getByRole("button", { name: "Account" })).toBeInTheDocument();
+    });
+
+    it("still offers a way out", async () => {
+      await openMenu(/account/i);
+
+      expect(screen.getByRole("menuitem", { name: "Logout" })).toBeInTheDocument();
+      expect(screen.getByRole("menuitem", { name: "Refresh user info" })).toBeInTheDocument();
+    });
+
+    // There is no user id to open a profile for. Settings still heads the first group, so the
+    // dividers stay at two: one under Settings, one above Logout.
+    it("drops the profile row, leaving Settings first", async () => {
+      await openMenu(/account/i);
+
+      expect(
+        screen.queryByRole("menuitem", { name: "View profile on web" }),
+      ).not.toBeInTheDocument();
+      expect(screen.getAllByRole("menuitem")[0]).toHaveTextContent("Settings");
+      expect(screen.getAllByRole("separator")).toHaveLength(2);
     });
   });
 });

@@ -1,48 +1,32 @@
-import type PromiseBB from "bluebird";
-import type { TFunction } from "i18next";
 import React from "react";
 
-import { getSafe } from "@/util/storeHelper";
-
-import type { IDiscoveryResult } from "../types/IDiscoveryResult";
 import type { IGameStored } from "../types/IGameStored";
-import GameThumbnail from "../views/GameThumbnail";
+import type { IGameSection } from "./GameCard";
+import { GameCard } from "./GameCard";
 
 interface IGamesGridProps {
-  t: TFunction;
+  /** The store each game was detected on, by game id, for cards discovery hasn't labelled. */
+  detectedStores?: Record<string, string>;
   games: IGameStored[];
-  type: string;
-  gameMode: string;
-  discoveredGames: { [id: string]: IDiscoveryResult };
-  onRefreshGameInfo: (gameId: string) => PromiseBB<void>;
+  section: IGameSection;
+  onRefreshGameInfo: (gameId: string) => PromiseLike<void>;
 }
 
 export const GamesGrid = ({
-  t,
+  detectedStores,
   games,
-  type,
-  gameMode,
-  discoveredGames,
+  section,
   onRefreshGameInfo,
-}: IGamesGridProps) => {
-  const isDiscovered = (gameId: string) =>
-    getSafe(discoveredGames, [gameId, "path"], undefined) !== undefined;
-
-  return (
-    <div className="grid-games">
-      {games.map((game) => (
-        <GameThumbnail
-          active={game.id === gameMode}
-          className="w-full!"
-          discovered={isDiscovered(game.id)}
-          game={game}
-          imageClassName="rounded-md"
-          key={game.id + "_" + (game.contributed ?? "official")}
-          t={t}
-          type={type}
-          onRefreshGameInfo={onRefreshGameInfo}
-        />
-      ))}
-    </div>
-  );
-};
+}: IGamesGridProps) => (
+  <div className="grid-games">
+    {games.map((game) => (
+      <GameCard
+        detectedStore={detectedStores?.[game.id]}
+        game={game}
+        key={game.id + "_" + (game.contributed ?? "official")}
+        section={section}
+        onRefreshGameInfo={onRefreshGameInfo}
+      />
+    ))}
+  </div>
+);

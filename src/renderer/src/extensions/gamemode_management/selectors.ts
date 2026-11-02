@@ -1,3 +1,5 @@
+import { GameId } from "@vortex/shared";
+import memoizeOne from "memoize-one";
 import { createCachedSelector } from "re-reselect";
 import { createSelector } from "reselect";
 
@@ -7,6 +9,7 @@ import { getSafe } from "../../util/storeHelper";
 import { SITE_ID } from "./constants";
 import type { IDiscoveryResult } from "./types/IDiscoveryResult";
 import type { IGameStored } from "./types/IGameStored";
+import "./reducers/session";
 
 export function knownGames(state: IState): IGameStored[] {
   return state.session.gameMode.known ?? [];
@@ -14,6 +17,24 @@ export function knownGames(state: IState): IGameStored[] {
 
 export function discovered(state: IState): { [id: string]: IDiscoveryResult } {
   return state.settings.gameMode.discovered;
+}
+
+// memoized on the available-list identity: the catalog array is only replaced
+// when its data changes, so the returned Set is stable between those
+const cachedExtensionGameIds = memoizeOne((available: { gameId?: number }[]) => {
+  const gameIds = new Set<GameId>();
+  for (const ext of available) {
+    if (ext.gameId !== undefined) {
+      gameIds.add(GameId(ext.gameId));
+    }
+  }
+  return gameIds;
+});
+
+/** The numeric Nexus ids of the games an extension in the catalog provides support for.
+ * Guests and logged-in users alike read this purely from the extension list. */
+export function catalogExtensionGameIds(state: IState): ReadonlySet<GameId> {
+  return cachedExtensionGameIds(state.session.extensions?.available ?? []);
 }
 
 export const currentGame = createSelector(knownGames, activeGameId, (games, currentGameMode) =>

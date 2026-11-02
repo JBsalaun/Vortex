@@ -1,6 +1,6 @@
-import { mdiMagnifyRemoveOutline } from "@mdi/js";
 import React, { type ComponentType, type PropsWithChildren, type ReactNode } from "react";
 
+import type { IIconSource } from "@/ui/components/icon/Icon";
 import { ListingLoader } from "@/ui/components/listing_loader/ListingLoader";
 import { NoResults } from "@/ui/components/no_results/NoResults";
 
@@ -12,16 +12,18 @@ export const Listing = ({
   customError,
   customNoResults,
   entityCount,
-  errorIconPath,
+  errorIcon,
   errorMessage,
   errorTitle,
   isError,
   isLoading,
   noResultsClassName = "py-16",
-  noResultsIconPath,
+  noResultsIcon = "zoom_out",
+  noResultsIconClassName,
   noResultsChildren,
   noResultsMessage = "Try adjusting your filters or search terms.",
   noResultsTitle = "No items found",
+  onRetry,
   skeletonCount = 4,
   SkeletonTile,
 }: PropsWithChildren<{
@@ -32,16 +34,18 @@ export const Listing = ({
   customError?: ReactNode;
   customNoResults?: ReactNode;
   entityCount?: number;
-  errorIconPath?: string;
+  errorIcon?: IIconSource;
   errorMessage?: string;
   errorTitle?: string;
   isError?: boolean;
   isLoading?: boolean;
   noResultsClassName?: string;
   noResultsChildren?: ReactNode;
-  noResultsIconPath?: string;
+  noResultsIcon?: IIconSource;
+  noResultsIconClassName?: string;
   noResultsMessage?: string;
   noResultsTitle?: string;
+  onRetry?: () => void;
   skeletonCount?: number;
 }>) => {
   if (isLoading || !!entityCount) {
@@ -68,10 +72,11 @@ export const Listing = ({
         {customError ?? (
           <NoResults
             className={noResultsClassName}
-            iconPath={errorIconPath}
+            icon={errorIcon}
             isError={true}
             message={errorMessage}
             title={errorTitle}
+            onRetry={onRetry}
           />
         )}
       </>
@@ -83,7 +88,8 @@ export const Listing = ({
       {customNoResults ?? (
         <NoResults
           className={noResultsClassName}
-          iconPath={noResultsIconPath ?? mdiMagnifyRemoveOutline}
+          icon={noResultsIcon}
+          iconClassName={noResultsIconClassName}
           message={noResultsMessage}
           title={noResultsTitle}
         >

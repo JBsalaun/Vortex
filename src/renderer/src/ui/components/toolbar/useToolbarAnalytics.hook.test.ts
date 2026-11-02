@@ -1,5 +1,5 @@
 /**
- * The shape of `toolbar_action_clicked` as it reaches the generic Mixpanel funnel. The event
+ * The shape of `app_toolbar_action_clicked` as it reaches the generic Mixpanel funnel. The event
  * carries no game, version or user scope of its own — those are super properties
  * registered elsewhere — so what is asserted here is the whole of what a toolbar
  * contributes.
@@ -49,7 +49,7 @@ describe("useToolbarAnalytics", () => {
   it("reports the action, its toolbar and where it was reached from", () => {
     const event = report({ id: "deploy-mods" }, "bar");
 
-    expect(event.eventName).toBe("toolbar_action_clicked");
+    expect(event.eventName).toBe("app_toolbar_action_clicked");
     expect(event.properties).toEqual({ action: "deploy-mods", surface: "bar", toolbar: "mods" });
   });
 
@@ -66,14 +66,41 @@ describe("useToolbarAnalytics", () => {
 
     expect(Object.keys(event.properties)).not.toContain("extension");
   });
+
+  it("adds an action's own properties to its click", () => {
+    const event = report({ id: "beta-table", properties: { view: "beta" } }, "bar");
+
+    expect(event.properties).toEqual({
+      action: "beta-table",
+      surface: "bar",
+      toolbar: "mods",
+      view: "beta",
+    });
+  });
+
+  it("keeps an action's own properties from standing in for which button it was", () => {
+    const event = report(
+      { id: "beta-table", properties: { action: "other", surface: "x" } },
+      "bar",
+    );
+
+    expect(event.properties).toMatchObject({ action: "beta-table", surface: "bar" });
+  });
 });
 
 describe("useToolbarAnalytics pin tracking", () => {
   it.each([true, false])("reports the state a pin was moved to (pinned=%s)", (pinned) => {
     const event = reportPin({ id: "deploy" }, pinned);
 
-    expect(event.eventName).toBe("toolbar_pin_changed");
+    expect(event.eventName).toBe("app_toolbar_pin_changed");
     expect(event.properties).toEqual({ action: "deploy", pinned, toolbar: "mods" });
+  });
+
+  // What a click says about itself, such as which way a toggle went, means nothing on a pin.
+  it("leaves an action's own properties off its pin", () => {
+    const event = reportPin({ id: "beta-table", properties: { view: "beta" } }, true);
+
+    expect(event.properties).toEqual({ action: "beta-table", pinned: true, toolbar: "mods" });
   });
 
   it("names the extension a pinned action came from", () => {
@@ -89,7 +116,7 @@ describe("useToolbarAnalytics pin tracking", () => {
 
     const event = lastEvent();
 
-    expect(event.eventName).toBe("toolbar_pins_reset");
+    expect(event.eventName).toBe("app_toolbar_pins_reset");
     expect(event.properties).toEqual({ toolbar: "mods" });
   });
 });

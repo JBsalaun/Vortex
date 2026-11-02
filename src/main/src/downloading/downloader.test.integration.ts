@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { readFile, mkdtemp, mkdir, rm } from "node:fs/promises";
+import { readFile, mkdtemp, mkdir, open, rm } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 
@@ -10,7 +10,6 @@ import { RateLimiter } from "limiter";
 import { CookieJar } from "tough-cookie";
 import { assert, describe, it, expect, vi, beforeAll, afterAll, test } from "vitest";
 
-import { assertVortexError } from "../test-utils/assertions";
 import { defaultRetryStrategy } from "../transfer/retry";
 import { download, type TimeoutOptions } from "./downloader";
 import { ProgressReporter } from "./progress";
@@ -377,6 +376,31 @@ describe("download", () => {
       const heads = route.requests.filter((r) => r.method === "HEAD");
       const resumeHead = heads[heads.length - 1]!;
       expect(resumeHead.headers["if-match"]).toBe(etag);
+    });
+  });
+
+  describe("writes", () => {
+    it("writes received data in large blocks rather than per network chunk", async () => {
+      using route = server.route(serveFile({ body: LARGE_FILE, acceptRanges: false }));
+      await using tmp = await makeTmpDir();
+      const dest = path.join(tmp.dir, "output");
+
+      // FileHandle is not exported, so reach its prototype through an open handle
+      const probe = await open(path.join(tmp.dir, "probe"), "w");
+      const write = vi.spyOn(Object.getPrototypeOf(probe), "write");
+      await probe.close();
+
+      let writes: number;
+      try {
+        await download(route.url, dest, { resolver: urlResolver, chunker: () => [] });
+      } finally {
+        writes = write.mock.calls.length;
+        write.mockRestore();
+      }
+
+      // 20 MiB in 1 MiB blocks, where per-chunk writes would take hundreds
+      expect(writes).toBeLessThanOrEqual(21);
+      expect(Buffer.compare(LARGE_FILE, await readFile(dest))).toBe(0);
     });
   });
 
@@ -853,7 +877,8 @@ describe("download", () => {
       const err = await runDownload(route.url, tmp.dir, {
         abortController,
       }).promise.catch((e) => e);
-      assertVortexError(err, "user-canceled");
+
+      assert(err instanceof VortexError && err.data.kind === "user-canceled");
     });
   });
 
@@ -991,7 +1016,7 @@ describe("download", () => {
         },
       ).catch((e) => e);
 
-      assertVortexError(err, "user-canceled");
+      assert(err instanceof VortexError && err.data.kind === "user-canceled");
     });
   });
 

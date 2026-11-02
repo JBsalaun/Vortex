@@ -1,8 +1,8 @@
-import { mdiAccountCircle, mdiLogout, mdiRefresh } from "@mdi/js";
 import React, { type FC } from "react";
 import { useTranslation } from "react-i18next";
 import { useDispatch, useSelector } from "react-redux";
 
+import { setOpenMainPage } from "@/actions/session";
 import { useExtensionContext } from "@/ExtensionProvider";
 import {
   clearOAuthCredentials,
@@ -13,9 +13,9 @@ import { scheduleMembershipRefresh } from "@/extensions/nexus_integration/member
 import { Icon } from "@/ui/components/icon/Icon";
 import { Image } from "@/ui/components/image/Image";
 import { Popover } from "@/ui/components/popover/Popover";
+import { PopoverMenu } from "@/ui/components/popover/popover_menu/PopoverMenu";
+import type { IMenuAction } from "@/ui/components/popover/popover_menu/PopoverMenu.types";
 import { PopoverButton } from "@/ui/components/popover/PopoverButton";
-import { PopoverMenu } from "@/ui/components/popover/PopoverMenu";
-import type { IMenuAction } from "@/ui/components/popover/PopoverMenuItem";
 import { PopoverPanel } from "@/ui/components/popover/PopoverPanel";
 import { Tooltip } from "@/ui/components/tooltip/Tooltip";
 
@@ -40,25 +40,34 @@ export const ProfileSection: FC<React.PropsWithChildren<unknown>> = () => {
 
   // Signed out there is no account to open, so the slot carries the help options on
   // their own — the login call to action lives in the premium slot instead.
-  if (!loggedIn || !userInfo) {
+  if (!loggedIn) {
     return <HelpMenu />;
   }
 
-  const label = userInfo.name ?? t("Account");
+  const label = userInfo?.name ?? t("Account");
 
   const sections: IMenuAction[][] = [
     [
+      ...(userInfo
+        ? [
+            {
+              icon: { name: "account_circle", filled: true },
+              label: t("View profile on web"),
+              onClick: () => {
+                opn(`${NEXUS_BASE_URL}/users/${userInfo.userId}`).catch(() => {});
+              },
+            } satisfies IMenuAction,
+          ]
+        : []),
       {
-        iconPath: mdiAccountCircle,
-        label: t("View profile on web"),
-        onClick: () => {
-          opn(`${NEXUS_BASE_URL}/users/${userInfo.userId}`).catch(() => {});
-        },
+        icon: "settings",
+        label: t("Settings"),
+        onClick: () => dispatch(setOpenMainPage("application_settings", false)),
       },
     ],
     [
       {
-        iconPath: mdiRefresh,
+        icon: "refresh",
         label: t("Refresh user info"),
         onClick: () => scheduleMembershipRefresh(api),
       },
@@ -66,7 +75,7 @@ export const ProfileSection: FC<React.PropsWithChildren<unknown>> = () => {
     ],
     [
       {
-        iconPath: mdiLogout,
+        icon: "logout",
         label: t("Logout"),
         onClick: () => {
           dispatch(setUserAPIKey(undefined));
@@ -88,7 +97,7 @@ export const ProfileSection: FC<React.PropsWithChildren<unknown>> = () => {
               brand="neutral"
               data-testid="profile-menu-trigger"
               leftIcon={
-                userInfo.profileUrl ? (
+                userInfo?.profileUrl ? (
                   <Image
                     alt={userInfo.name ?? ""}
                     className="size-5 rounded-full"
@@ -96,7 +105,7 @@ export const ProfileSection: FC<React.PropsWithChildren<unknown>> = () => {
                     src={userInfo.profileUrl}
                   />
                 ) : (
-                  <Icon path={mdiAccountCircle} />
+                  <Icon filled name="account_circle" />
                 )
               }
             />

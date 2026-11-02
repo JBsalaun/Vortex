@@ -18,14 +18,21 @@
 
 import * as path from "path";
 
-import { getErrorMessageOrDefault } from "@vortex/shared";
+import {
+  getErrorMessageOrDefault,
+  isEnvironmentalError,
+  VortexError,
+  VortexProfileId,
+} from "@vortex/shared";
+import { VortexGameId } from "@vortex/shared";
 import PromiseBB from "bluebird";
 import type * as Redux from "redux";
 import { generate as shortid } from "shortid";
 
 import type { IDialogResult } from "../../actions/notifications";
-import { addNotification, showDialog } from "../../actions/notifications";
+import { addNotification, dismissNotification, showDialog } from "../../actions/notifications";
 import { clearUIBlocker, setProgress, setUIBlocker } from "../../actions/session";
+import { FlagService } from "../../FlagService";
 import { log } from "../../logging";
 import type { IExtensionDownloadInfo, IRegisteredExtension } from "../../types/extensions";
 import type { IExtensionApi, IExtensionContext, ThunkStore } from "../../types/IExtensionContext";
@@ -50,29 +57,30 @@ import {
   needToDeployForGame,
 } from "../../util/selectors";
 import { getSafe } from "../../util/storeHelper";
-import { batchDispatch, truthy } from "../../util/util";
+import { truthy } from "../../util/util";
 import { emitGameManaged, emitGameUnmanaged } from "../analytics/mixpanel/gameManageAnalytics";
+import { tierZeroEntry } from "../gamemode_management/util/detected_games/tierZeroEntry";
 import { getGame, getGameStubDownloadInfo } from "../gamemode_management/util/getGame";
 import { ensureStagingDirectory } from "../mod_management/stagingDirectory";
 import { purgeMods } from "../mod_management/util/deploy";
 import { NoDeployment } from "../mod_management/util/exceptions";
 import {
-  forgetMod,
   removeProfile,
   setProfile,
   setProfileActivated,
   willRemoveProfile,
 } from "./actions/profiles";
 import { clearLastActiveProfile, setCurrentProfile, setNextProfile } from "./actions/settings";
-import { STUCK_TIMEOUT } from "./constants";
+import { PROFILE_SWITCH_FAILED_NOTIFICATION_ID, STUCK_TIMEOUT } from "./constants";
 import { profilesReducer } from "./reducers/profiles";
 import { settingsReducer } from "./reducers/settings";
 import transferSetupReducer from "./reducers/transferSetup";
 import { activeGameId, activeProfile, lastActiveProfileForGame, profileById } from "./selectors";
 import { syncFromProfile, syncToProfile } from "./sync";
-import { CorruptActiveProfile } from "./types/Errors";
+import { CorruptActiveProfile, ProfileSwitchStep } from "./types/Errors";
 import type { IProfile } from "./types/IProfile";
 import type { IProfileFeature } from "./types/IProfileFeature";
+import { sanitizeProfile } from "./util/sanitizeProfile";
 import Connector from "./views/Connector";
 import ProfileView from "./views/ProfileView";
 import TransferDialog from "./views/TransferDialog";
@@ -89,24 +97,6 @@ function profilePath(profile: IProfile): string {
 
 function checkProfile(store: Redux.Store<any>, currentProfile: IProfile): PromiseBB<void> {
   return fs.ensureDirAsync(profilePath(currentProfile));
-}
-
-function sanitizeProfile(store: Redux.Store<any>, profile: IProfile): void {
-  const state: IState = store.getState();
-  const batched = [];
-  Object.keys(profile.modState || {}).forEach((modId) => {
-    if (getSafe(state.persistent.mods, [profile.gameId, modId], undefined) === undefined) {
-      log("debug", "removing info of missing mod from profile", {
-        profile: profile.id,
-        game: profile.gameId,
-        modId,
-      });
-      batched.push(forgetMod(profile.id, modId));
-    }
-  });
-  if (batched.length > 0) {
-    batchDispatch(store, batched);
-  }
 }
 
 function refreshProfile(
@@ -245,7 +235,22 @@ function activateGame(store: ThunkStore<IState>, gameId: string): PromiseBB<void
   }
 }
 
-function deploy(api: IExtensionApi, profileId: string): PromiseBB<void> {
+const SWITCH_STEP_LABEL: Record<ProfileSwitchStep, string> = {
+  [ProfileSwitchStep.PendingProfile]: "pending profile",
+  [ProfileSwitchStep.PreviousProfile]: "previously active profile",
+  [ProfileSwitchStep.NextProfile]: "next active profile",
+};
+
+const isSwitchDeployFailure = (err: unknown): err is VortexError =>
+  err instanceof VortexError && err.data.kind === "profile-switch:deploy-failed";
+
+/** Deploys the profile unless it is its game's last active one with nothing pending. */
+function deploy(
+  api: IExtensionApi,
+  profileId: string | undefined,
+  step: ProfileSwitchStep,
+): PromiseBB<void> {
+  const what = SWITCH_STEP_LABEL[step];
   const state: IState = api.store.getState();
   if (profileId === undefined || state.persistent.profiles[profileId] === undefined) {
     return PromiseBB.resolve();
@@ -269,6 +274,8 @@ function deploy(api: IExtensionApi, profileId: string): PromiseBB<void> {
     return PromiseBB.resolve();
   }
 
+  log("info", `will deploy ${what}`, profileId);
+
   let lastProgress: number = Date.now();
 
   const watchdog = setInterval(() => {
@@ -284,15 +291,27 @@ function deploy(api: IExtensionApi, profileId: string): PromiseBB<void> {
     }
   }, 1000);
 
-  return new PromiseBB((resolve, reject) => {
+  return new PromiseBB<void>((resolve, reject) => {
     api.events.emit(
       "deploy-mods",
       onceCB((err: Error) => {
         clearInterval(watchdog);
         if (err === null) {
+          log("info", `did deploy ${what}`, profileId);
           resolve();
-        } else {
+        } else if (err instanceof UserCanceled) {
           reject(err);
+        } else {
+          const failure = new VortexError(
+            `Deploying the ${what} failed`,
+            { kind: "profile-switch:deploy-failed", step, profileId: VortexProfileId(profileId) },
+            { cause: err },
+          );
+          if (isEnvironmentalError(err)) {
+            // telemetry classifies by this flag, it does not look at the cause
+            Object.assign(failure, { allowReport: false });
+          }
+          reject(failure);
         }
       }),
       profileId,
@@ -300,6 +319,7 @@ function deploy(api: IExtensionApi, profileId: string): PromiseBB<void> {
         lastProgress = Date.now();
         api.store.dispatch(setProgress("profile", "deploying", text, percent));
       },
+      { failOnError: true },
     );
   });
 }
@@ -315,7 +335,7 @@ function genOnProfileChange(
   onFinishProfileSwitch: (callback: () => void) => void,
 ) {
   let finishProfileSwitchPromise: PromiseBB<void> = PromiseBB.resolve();
-  const { store } = api;
+  const store = api.store as ThunkStore<IState>;
 
   let cancelPromise: () => void;
 
@@ -329,7 +349,12 @@ function genOnProfileChange(
 
   const cancelSwitch = () => {
     invokeCancel();
-    store.dispatch(setCurrentProfile(undefined, undefined));
+    if (store.getState().settings.profiles.activeProfileId === undefined) {
+      // nothing changes, so the state watcher that announces the end of a switch stays silent
+      api.events.emit("profile-did-change", undefined);
+    } else {
+      store.dispatch(setCurrentProfile(undefined, undefined));
+    }
     store.dispatch(setNextProfile(undefined));
   };
 
@@ -349,6 +374,9 @@ function genOnProfileChange(
 
   return (prev: string, current: string) => {
     log("debug", "profile change", { from: prev, to: current });
+    if (current !== undefined) {
+      store.dispatch(dismissNotification(PROFILE_SWITCH_FAILED_NOTIFICATION_ID));
+    }
     finishProfileSwitchPromise
       .then(() => {
         const state: IState = store.getState();
@@ -438,6 +466,17 @@ function genOnProfileChange(
 
         sanitizeProfile(store, profile);
 
+        // Cross-game: skip the outgoing profile and a last-active incoming one; deploy the
+        // incoming game's pending last-active profile first.
+        const switchesGame = oldProfile !== undefined && oldProfile.gameId !== profile.gameId;
+        const lastActiveId = lastActiveProfileForGame(state, profile.gameId);
+        const pendingId =
+          switchesGame && current !== lastActiveId && needToDeployForGame(state, profile.gameId)
+            ? lastActiveId
+            : undefined;
+        const prevId = switchesGame ? undefined : prev;
+        const nextId = switchesGame && current === lastActiveId ? undefined : current;
+
         return PromiseBB.resolve(
           withTrackedActivity(
             "vortex.profile-management",
@@ -450,22 +489,22 @@ function genOnProfileChange(
             () =>
               queue
                 .then(() => {
+                  if (pendingId === undefined) {
+                    return undefined;
+                  }
+                  return deploy(api, pendingId, ProfileSwitchStep.PendingProfile).then(() =>
+                    refreshProfile(store, profileById(api.getState(), pendingId), "import"),
+                  );
+                })
+                .then(() => {
                   log("debug", "starting refresh profile export");
                   return refreshProfile(store, profile, "export");
                 })
                 // ensure the old profile is synchronised before we switch, otherwise me might
                 // revert some changes
+                .then(() => deploy(api, prevId, ProfileSwitchStep.PreviousProfile))
+                .then(() => deploy(api, nextId, ProfileSwitchStep.NextProfile))
                 .then(() => {
-                  log("info", "will deploy previously active profile", prev);
-                  return deploy(api, prev);
-                })
-                .then(() => {
-                  log("info", "did deploy previously active profile", prev);
-                  log("info", "will deploy next active profile", current);
-                  return deploy(api, current);
-                })
-                .then(() => {
-                  log("info", "did deploy next active profile", current);
                   const prof = profileById(api.store.getState() as IState, current);
                   if (prof === undefined) {
                     return PromiseBB.reject(
@@ -488,6 +527,17 @@ function genOnProfileChange(
       .catch((err) => {
         cancelSwitch();
         return PromiseBB.reject(err);
+      })
+      .catch(isSwitchDeployFailure, (err: VortexError) => {
+        // the deployment already reported its own error in detail
+        showError(store.dispatch, "Failed to set profile", err.message, {
+          id: PROFILE_SWITCH_FAILED_NOTIFICATION_ID,
+          allowReport: false,
+          actions:
+            prev === undefined
+              ? []
+              : [{ title: "Switch back", action: () => store.dispatch(setNextProfile(prev)) }],
+        });
       })
       .catch(ProcessCanceled, (err) => {
         showError(store.dispatch, "Failed to set profile", err.message, {
@@ -556,14 +606,6 @@ function manageGameUndiscovered(api: IExtensionApi, gameId: string): PromiseBB<v
     const stubDownloadInfo = getGameStubDownloadInfo(gameId);
     let extension: IExtensionDownloadInfo;
     if (stubDownloadInfo !== undefined) {
-      if (stubDownloadInfo.modId !== undefined && stubDownloadInfo.fileId === undefined) {
-        const manifestEntry = state.session.extensions.available.find(
-          (ext) => ext.modId === stubDownloadInfo.modId,
-        );
-        if (manifestEntry !== undefined) {
-          stubDownloadInfo.fileId = manifestEntry.fileId;
-        }
-      }
       extension = stubDownloadInfo;
     } else {
       extension = state.session.extensions.available.find(
@@ -795,6 +837,14 @@ function unmanageGame(api: IExtensionApi, gameId: string, gameName?: string): Pr
           .then(() => PromiseBB.map(profileIds, (profileId) => removeProfileImpl(api, profileId)))
           .then(() => {
             emitGameUnmanaged(api, gameId);
+            // tear-down runs without the flag: un-managing is the cleanup path,
+            // it has to work no matter what the feature flag says
+            const tierZeroGameId = Object.values(state.persistent.gameMode?.tier0 ?? {}).find(
+              (entry) => entry.domain === gameId,
+            )?.gameId;
+            if (tierZeroGameId !== undefined) {
+              void api.emitAndAwait("remove-tier-zero-game", tierZeroGameId);
+            }
           })
           .catch((err) => {
             if (err instanceof UserCanceled) {
@@ -902,9 +952,22 @@ function init(context: IExtensionContext): boolean {
 
       context.api.events.emit("analytics-track-event", "Games", "Start managing", gameId);
 
-      context.api
-        .emitAndAwait("discover-game", gameId)
-        .then(() => checkOverridden(context.api, gameId))
+      // Managing a game nothing provides an extension for is the Tier 0 opt-in; the
+      // game has to be registered before discovery, whose path resolution reads the
+      // synthesized game's queryArgs. Any other Manage behaves exactly as before.
+      const tierZero =
+        FlagService.instance?.getFlag("vortex-tier-0-game-support") !== undefined
+          ? tierZeroEntry(context.api.getState(), VortexGameId(gameId))
+          : undefined;
+
+      const registerStep =
+        tierZero !== undefined
+          ? context.api.emitAndAwait("register-tier-zero-game", tierZero)
+          : Promise.resolve();
+
+      registerStep
+        .then(() => context.api.emitAndAwait("discover-game", gameId))
+        .then(() => Promise.resolve(checkOverridden(context.api, gameId)))
         .then(() => {
           const state = context.api.getState();
           // Mirrors the guard in manageGame: discovery can outlive the
@@ -915,7 +978,7 @@ function init(context: IExtensionContext): boolean {
               ? manageGameDiscovered
               : manageGameUndiscovered;
 
-          manageFunc(context.api, gameId);
+          return Promise.resolve(manageFunc(context.api, gameId));
         })
         .catch((err) => {
           if (!(err instanceof UserCanceled)) {

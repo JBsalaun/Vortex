@@ -13,6 +13,7 @@ import type { IGame } from "../../types/IGame";
 import { UserCanceled } from "../../util/CustomErrors";
 import * as fs from "../../util/fs";
 import { log } from "../../util/log";
+import { moveFile } from "../../util/transferPath";
 import type { IDiscoveryResult } from "../gamemode_management/types/IDiscoveryResult";
 import { getGame } from "../gamemode_management/util/getGame";
 import type { IDeployment } from "../mod_management/LinkingDeployment";
@@ -23,6 +24,7 @@ import type {
   IDeploymentMethod,
   IUnavailableReason,
 } from "../mod_management/types/IDeploymentMethod";
+import { existingPathSync } from "../mod_management/util/existingPath";
 
 const LNK_EXT = ".vortex_lnk";
 
@@ -86,7 +88,7 @@ class DeploymentMethod extends LinkingDeployment {
     }
 
     try {
-      fs.accessSync(modPaths[typeId], fs.constants.W_OK);
+      fs.accessSync(existingPathSync(modPaths[typeId]), fs.constants.W_OK);
     } catch (err) {
       log("info", "move deployment not supported due to lack of write access", {
         typeId,
@@ -109,7 +111,7 @@ class DeploymentMethod extends LinkingDeployment {
     }
 
     try {
-      if (fs.statSync(instPath).dev !== fs.statSync(modPaths[typeId]).dev) {
+      if (fs.statSync(instPath).dev !== fs.statSync(existingPathSync(modPaths[typeId])).dev) {
         // actually we could support this but it would be so slow it wouldn't make sense
 
         return {
@@ -117,12 +119,14 @@ class DeploymentMethod extends LinkingDeployment {
           order: 8,
           solution: (t) => {
             let displayPath = modPaths[typeId];
-            try {
-              displayPath = winapi.GetVolumePathName(modPaths[typeId]);
-            } catch (err) {
-              log("warn", "Failed to resolve volume path", {
-                path: modPaths[typeId],
-              });
+            if (process.platform === "win32") {
+              try {
+                displayPath = winapi.GetVolumePathName(modPaths[typeId]);
+              } catch (err) {
+                log("warn", "Failed to resolve volume path", {
+                  path: modPaths[typeId],
+                });
+              }
             }
             return t(
               "Please go to Settings->Mods and set the mod staging folder to be on " +
@@ -344,7 +348,7 @@ class DeploymentMethod extends LinkingDeployment {
           fs.utimesAsync(sourcePath + LNK_EXT, stat.atime as any, stat.mtime as any),
         ),
       )
-      .then(() => fs.renameAsync(sourcePath, linkPath));
+      .then(() => moveFile(sourcePath, linkPath));
   }
 
   private restoreLink(linkPath: string): PromiseBB<void> {
@@ -362,7 +366,7 @@ class DeploymentMethod extends LinkingDeployment {
                 // if the game was moved the links shouldn't point to a valid location,
                 // if the staging folder was moved we should have purged
                 err.code === "EXDEV"
-                ? fs.moveAsync(dat.target, outPath)
+                ? moveFile(dat.target, outPath)
                 : PromiseBB.reject(err),
           )
           .then(() => fs.removeAsync(linkPath));

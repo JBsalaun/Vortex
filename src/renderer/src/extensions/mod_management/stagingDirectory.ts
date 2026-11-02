@@ -143,7 +143,9 @@ async function ensureStagingDirectoryImpl(
 
   let partitionExists = true;
   try {
-    winapi.GetVolumePathName(instPath);
+    if (process.platform === "win32") {
+      winapi.GetVolumePathName(instPath);
+    }
   } catch (err) {
     // On Windows, error number 2 (0x2) translates to ERROR_FILE_NOT_FOUND.
     //  the only way for this error to be reported at this point is when

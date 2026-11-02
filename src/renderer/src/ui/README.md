@@ -8,20 +8,32 @@ Components adapted from the web team's "next" project for use in Vortex.
 ui/
 ├── components/
 │   ├── alert/           - Full-width page-level message bar (replaces Bootstrap Alert)
+│   ├── badges/          - Small badges marking what something is
+│   │   ├── nexus_badge/ - The Nexus Mods logo in its own colours
+│   │   └── premium_badge/ - Premium diamond badge
 │   ├── bullet/          - Small rotated-square dot used as an inline marker/separator
 │   ├── button/          - Button system (brand × appearance matrix)
 │   ├── collectiontile/  - Collection card with image, metadata, and actions
 │   ├── dropdown/        - Dropdown menu (Headless UI Menu)
 │   ├── form/            - Form components
-│   │   ├── checkbox/    - Checkbox input
-│   │   ├── formfield/   - Form field wrapper with labels and validation
-│   │   ├── input/       - Text input with validation
-│   │   ├── select/      - Select dropdown with custom styling
-│   │   └── switch/      - Tri-state toggle switch (off / on / semi-on)
-│   ├── icon/            - Icon rendering (MDI + Nexus custom icons)
+│   │   ├── checkbox/    - Bare checkbox, with indeterminate (Headless UI Checkbox)
+│   │   ├── checkbox_field/ - Checkbox with its label beside it, hints and error
+│   │   ├── field/       - Field, Label, Description, ErrorMessage, CharacterCount (Headless UI Field)
+│   │   ├── input/       - Bare text input (Headless UI Input)
+│   │   ├── radio/       - Bare radio, for use inside a Headless UI RadioGroup (Headless UI Radio)
+│   │   ├── radio_group_field/ - Radio options, one chosen at a time, each with its label and hint
+│   │   ├── select/      - Bare native select with its chevron (Headless UI Select)
+│   │   ├── select_field/ - Select with its label, hints and error
+│   │   ├── switch/      - Bare tri-state switch: off / on / semi-on (Headless UI Checkbox)
+│   │   ├── switch_field/ - Switch with its label beside it and hints under both
+│   │   ├── text_area_field/ - Multi-line text input with its label, hints, error and character count
+│   │   ├── textarea/    - Bare multi-line text input (Headless UI Textarea)
+│   │   └── text_field/  - Text input with its label, hints, error and character count
+│   ├── icon/            - Icon rendering (Material Symbols + Nexus custom icons)
 │   ├── image/           - Image wrapper with aspect ratios and fallback (+ adult-aware variant)
 │   ├── listbox/         - Listbox select (Headless UI Listbox)
 │   ├── listing/         - List display component
+│   ├── message_box/     - Read-only, selectable box for details, with a copy button, optionally behind a show/hide toggle
 │   ├── modal/           - Modal dialog (Headless UI Dialog)
 │   ├── pictogram/       - Decorative SVG pictograms
 │   ├── listing_loader/  - Loading skeleton for lists
@@ -30,14 +42,13 @@ ui/
 │   ├── picker/          - Single-value selector (Headless UI Listbox)
 │   ├── pill/            - Compact rounded label for tags and statuses
 │   ├── popover/         - Floating panel of interactive content, or a menu of actions (Headless UI Popover)
-│   ├── premium_badge/   - Premium diamond badge
-│   ├── table/           - Data table (sort, filter, group, column toggle, optional pagination)
+│   ├── table/           - Column-driven grid table (work in progress, behind a dev switch)
 │   ├── tabs/            - Tabbed interface with context-based state
 │   ├── toolbar/         - Horizontal toolbar; groups collapse overflow into a kebab dropdown
 │   ├── tooltip/         - Rich, collision-aware tooltip (Floating UI)
-│   └── typography/      - Typography system (heading, title, body)
-├── lib/
-│   └── icon_paths/      - 34 custom Nexus Mods SVG icon paths
+│   ├── typography/      - Typography system (heading, title, body)
+│   └── view_picker/     - A list's views, built-in and the user's own, with a "+" to add one
+├── icon-paths.ts        - 12 custom Nexus Mods SVG icon paths, for what Material Symbols lacks
 ├── utils/
 │   ├── join_classes/     - Joins class names with conditional support
 │   └── types.ts         - Shared types (XOr, ResponsiveScreenSizes)
@@ -66,8 +77,7 @@ import type { XOr, ResponsiveScreenSizes } from "../../ui/utils/types";
 ### Icon Paths
 
 ```tsx
-import { nxmVortex, nxmCollection } from "../../ui/lib/icon_paths/iconPaths";
-import { mdiDownload, mdiAccount } from "@mdi/js";
+import { nxmVortex, nxmCollection } from "@/ui/icon-paths";
 ```
 
 ## CSS Convention
@@ -110,18 +120,20 @@ import { Button } from "../../ui/components/button/Button";
 <Button brand="success">Saved</Button>
 
 // With icons
-import { mdiDownload } from "@mdi/js";
-<Button leftIconPath={mdiDownload}>Download</Button>
+<Button leftIcon="download">Download</Button>
 
 // Icon-only (collapses to a square — always pass an aria-label)
-<Button aria-label="Download" leftIconPath={mdiDownload} />
+<Button aria-label="Download" leftIcon="download" />
 
 // Loading state
 <Button isLoading>Processing...</Button>
+
+// Disclosure toggle: keeps aria-expanded, without the menu-trigger "open" highlight
+<Button aria-expanded={!collapsed} hasExpandedStyle={false} leftIcon="keyboard_arrow_up" />
 ```
 
 **Brands:** `primary`, `info`, `neutral`, `success`, `premium`, `danger`
-**Appearances:** `strong` (solid fill), `moderate` (subtle surface), `subdued` (outline), `weak` (text only)
+**Appearances:** `strong` (solid fill), `moderate` (subtle surface), `subdued` (outline), `weak` (text only), `scrim` (paints its own scrim, for a button over artwork — `neutral` only)
 **Sizes:** `sm` (24px), `md` (28px, default), `lg` (36px)
 
 A button with no `children`/`customContent` but an icon renders icon-only (square). Every brand supports every appearance; `success`/`premium` derive their full ramps to match. `appearance` defaults to `strong` so a bare `<Button>` is a solid primary button.
@@ -132,22 +144,36 @@ A button with no `children`/`customContent` but an icon renders icon-only (squar
 
 ```tsx
 import { Icon } from "../../ui/components/icon/Icon";
-import { mdiAccount } from "@mdi/js";
-import { nxmVortex } from "../../ui/lib/icon_paths/iconPaths";
+import { nxmVortex } from "@/ui/icon-paths";
 
-<Icon path={mdiAccount} size="md" />
+<Icon name="person" filled size="md" />
 <Icon path={nxmVortex} size="lg" title="Vortex" />
 ```
 
 **Sizes:** `xs` (12px), `sm` (16px), `md` (20px), `lg` (24px), `xl` (32px), `2xl` (48px), `none` (controlled via className)
 
+**Axes:** with `name`, `filled`, `weight`, `grade` and `opticalSize` set the font's axes. Any Material Symbol works; the whole font ships.
+
+**In other components:** a component's `icon` (or `leftIcon`, `rightIcon`, `fallbackIcon` and so on) takes a symbol by name, a symbol with its axes, an SVG path, or an element; a bare string has to be a real symbol. `IIconProp` is the type, from `Icon.tsx`.
+
+```tsx
+<Button leftIcon="add">Add</Button>
+<Button leftIcon={{ name: "star", filled: true }}>Favourite</Button>
+<Button leftIcon={{ path: nxmMod }}>Mod</Button>
+<Button leftIcon={<Logo />}>Custom</Button>
+```
+
 ### Typography
 
 Colour is expressed as `brand` × `appearance`: `brand` picks the colour family, `appearance` picks the intensity.
 
-**Defaults:** `as="p"`, `brand="neutral"`, `appearance="strong"`, `typographyType` inferred from `as` — only set these when you need something different.
+**Defaults:** `as="p"`, `brand="neutral"`, `appearance="strong"`, `typographyType="body-md"` — only set these when you need something different.
 
-When `typographyType` is omitted it falls back based on `as`: `h1`→`heading-2xl`, `h2`→`heading-xl`, `h3`→`heading-lg`, `h4`→`heading-md`, `h5`→`heading-sm`, `h6`→`heading-xs`, everything else→`body-md`.
+`as` only picks the element; it never changes the type style, so a heading sets its `typographyType` too. `typographyType="inherit"` keeps the parent's type style, for a nested Typography that only changes colour.
+
+Wrap a list or several paragraphs in one Typography with plain elements inside, rather than one per item. See "Text" in `docs/frontend.md`.
+
+Body styles are normal weight; Design's Medium and Semi Bold variants are `className="font-medium"` (500) and `className="font-semibold"` (600) on the same `typographyType`.
 
 ```tsx
 import { Typography } from "../../ui/components/typography/Typography";
@@ -156,10 +182,11 @@ import { Typography } from "../../ui/components/typography/Typography";
 <Typography>Some body text</Typography>
 
 // Only override what differs
-<Typography as="h1">Page Heading</Typography>
+<Typography as="h1" typographyType="heading-2xl">Page Heading</Typography>
 <Typography appearance="subdued">Muted text (neutral)</Typography>
 <Typography brand="info" appearance="moderate">Info text</Typography>
 <Typography as="span" typographyType="body-sm">Inline small text</Typography>
+<Typography appearance="subdued" as="span" typographyType="inherit">Muted, at the parent's size</Typography>
 
 // inverted is neutral-only (for light surfaces)
 <Typography appearance="inverted">On a light background</Typography>
@@ -173,9 +200,9 @@ import { Typography } from "../../ui/components/typography/Typography";
 </Typography>
 ```
 
-**Elements:** `h1`–`h6`, `p`, `span`, `div`, `ul`
-**Types:** `heading-2xl` through `heading-xs`, `title-md` through `title-xs`, `body-2xl` through `body-xs`
-**Brands:** `neutral` (default), `primary`, `info`, `success`, `premium`, `danger`, `warning`, `neutral-translucent` (white-alpha translucent ramp), `none` (opt out of colour)
+**Elements:** `h1`–`h6`, `p`, `span`, `div`, `ul`, `ol`
+**Types:** `heading-2xl` through `heading-xs`, `title-md` through `title-xs`, `body-2xl` through `body-xs`, plus `inherit`
+**Brands:** `neutral` (default), `primary`, `info`, `success`, `premium`, `danger`, `warning`, `neutral-translucent` (white-alpha translucent ramp), `neutral-on-scrim` (the fixed `on-scrim` ramp, for text laid over a scrim — stays light whatever the theme), `none` (opt out of colour)
 **Appearances:** `weak`, `subdued`, `moderate`, `strong` — plus `inverted` on `neutral` and `neutral-translucent` only. Setting `appearance` with `brand="none"` is disallowed (it would be redundant).
 
 ### TypographyLink
@@ -198,7 +225,7 @@ import { TypographyLink } from "../../ui/components/typography/TypographyLink";
 <TypographyLink variant="secondary">Secondary</TypographyLink>
 
 // Icons + inherit the surrounding text size (e.g. inside a Trans/sentence)
-<TypographyLink rightIconPath={mdiOpenInNew} typographyType="inherit">Open</TypographyLink>
+<TypographyLink rightIcon="open_in_new" typographyType="inherit">Open</TypographyLink>
 ```
 
 **Variants:** `primary` (always underlined), `secondary` (underlines on hover), `none` (no underline)
@@ -253,12 +280,11 @@ Use `flex-1` specifically, **not** `shrink`. Both let the toolbar narrow, but `s
 ```tsx
 import { Toolbar } from "../../ui/components/toolbar/Toolbar";
 import { type IToolbarAction, ToolbarGroup } from "../../ui/components/toolbar/ToolbarGroup";
-import { mdiFolderOpenOutline, mdiHistory, mdiRefresh } from "@mdi/js";
 
 const actions: IToolbarAction[] = [
-    { label: "Open mods folder", iconPath: mdiFolderOpenOutline, onClick: openFolder },
-    { label: "History", iconPath: mdiHistory, onClick: showHistory },
-    { label: "Refresh", iconPath: mdiRefresh, onClick: refresh, disabled: isBusy },
+    { label: "Open mods folder", icon: "folder_open", onClick: openFolder },
+    { label: "History", icon: "history", onClick: showHistory },
+    { label: "Refresh", icon: "refresh", onClick: refresh, disabled: isBusy },
 ];
 
 <Toolbar>
@@ -269,7 +295,7 @@ const actions: IToolbarAction[] = [
 </Toolbar>;
 ```
 
-**`IToolbarAction` fields:** `label` (required — the accessible name, tooltip, menu label, and button text when `showLabel`), `iconPath`, `onClick`, `panel` (see below), `disabled`, `brand` (defaults to `neutral`), `showLabel` (render the label as visible button text instead of icon-only, e.g. a "1 selected" pill), `pinned` (see below).
+**`IToolbarAction` fields:** `label` (required — the accessible name, tooltip, menu label, and button text when `showLabel`), `icon` (see below), `onClick`, `panel` (see below), `disabled`, `brand` (defaults to `neutral`), `showLabel` (render the label as visible button text instead of icon-only, e.g. a "1 selected" pill), `pinned` (see below).
 
 Actions are keyed internally by `label`, so labels should be unique within a group. The kebab is generated automatically — callers never author it.
 
@@ -277,10 +303,10 @@ Actions are keyed internally by `label`, so labels should be unique within a gro
 
 ```tsx
 const actions: IToolbarAction[] = [
-    { label: "Refresh", iconPath: mdiRefresh, onClick: refresh },
+    { label: "Refresh", icon: "refresh", onClick: refresh },
     {
         label: "Display options",
-        iconPath: mdiTune,
+        icon: "tune",
         panel: ({ close }) => <MyPanelRows onDone={close} />,
     },
 ];
@@ -294,9 +320,9 @@ The overflow menu is a [`PopoverMenu`](#popovermenu) rather than a `Menu` precis
 
 ```tsx
 const actions: IToolbarAction[] = [
-    { label: "Install mod", iconPath: mdiPlusCircleOutline, onClick: install, pinned: true },
-    { label: "Open mods folder", iconPath: mdiFolderOpenOutline, onClick: openFolder },
-    { label: "History", iconPath: mdiHistory, onClick: showHistory },
+    { label: "Install mod", icon: "add_circle", onClick: install, pinned: true },
+    { label: "Open mods folder", icon: "folder_open", onClick: openFolder },
+    { label: "History", icon: "history", onClick: showHistory },
 ];
 ```
 
@@ -346,29 +372,127 @@ The bar owns a 24px inline gutter and a bottom divider rather than a border and 
 
 ### Form Components
 
+Forms are built from Headless UI's `Field` parts, which link a control to its label and descriptions themselves. There are no ids to wire up.
+
+#### TextField
+
+A text input with its label, hints, error and, given `maxLength`, a character count. `label` is required: `hideLabel` hides it on screen, not from screen readers.
+
 ```tsx
-import { Input } from "../../ui/components/form/input/Input";
-import { Select } from "../../ui/components/form/select/Select";
-import { FormFieldWrap } from "../../ui/components/form/formfield/FormField";
+import { TextField } from "../../ui/components/form/text_field/TextField";
 
-// Input with validation
-<Input id="email" label="Email" type="email" required errorMessage="Invalid email" />
+<TextField label="Email" type="email" required errorMessage="Invalid email" />
 
-// Input with character counter
-<Input id="bio" label="Bio" type="text" maxLength={200} />
+// Character count
+<TextField label="Bio" maxLength={200} hints="Keep it short" />
 
-// Select dropdown
-<Select id="country" label="Country">
-  <option value="">Select...</option>
-  <option value="us">United States</option>
-</Select>
-
-// Multiple fields with spacing
-<FormFieldWrap>
-  <Input id="first" label="First Name" type="text" required />
-  <Input id="last" label="Last Name" type="text" required />
-</FormFieldWrap>
+// No visible label, but still named for screen readers
+<TextField hideLabel label="Filter categories" placeholder="Filter categories..." />
 ```
+
+**Props:** everything `Input` takes except `id` (Headless UI generates the ids that link the parts), plus `label`, `hideLabel`, `hints` (a string or a list), `errorMessage`, `hideErrors` (off screen only; screen readers still get it), `showRequiredLabel` (defaults to `required`), `fieldClassName` and `leftIcon` (an icon inside the input, before the text). `className` goes on the input and `fieldClassName` on the field around it. `onChange` receives the native change event.
+
+#### SelectField
+
+A native select with its label, hints and error. It takes the same field props as `TextField`, minus the character count and icon:
+
+```tsx
+import { SelectField } from "../../ui/components/form/select_field/SelectField";
+
+<SelectField
+    label="Country"
+    required
+    value={country}
+    onChange={(event) => setCountry(event.target.value)}
+>
+    <option value="">Select...</option>
+    <option value="us">United States</option>
+</SelectField>;
+```
+
+**Props:** everything `Select` takes except `id`, plus `label`, `hideLabel`, `hints`, `errorMessage`, `hideErrors`, `showRequiredLabel` and `fieldClassName`. Options and option groups are passed as children. `onChange` receives the native change event, as before.
+
+#### CheckboxField
+
+A checkbox with its label beside it, and hints and error under both. Clicking the label toggles it.
+
+```tsx
+import { CheckboxField } from "../../ui/components/form/checkbox_field/CheckboxField";
+
+<CheckboxField label="Include logs" checked={include} onChange={setInclude} />
+
+// Rich label, e.g. a title and a note; a long one wraps with the checkbox at the top
+<CheckboxField label={<><strong>{modName}</strong> {note}</>} checked={on} onChange={setOn} />
+```
+
+**Props:** Headless UI `Checkbox` props — `checked`, `onChange(checked: boolean)`, `disabled`, `indeterminate`, `name`/`value` for form submission, `defaultChecked` — plus `label` (required, and can be rich content), `hideLabel`, `hints`, `errorMessage` and `fieldClassName`. `onChange` receives the new checked value, not an event. `className` goes on the checkbox.
+
+`Checkbox` is the bare control: a `<span role="checkbox">`, so pass `name` for the value to take part in form submission, and outside a `Field` give it an `aria-label`. `indeterminate` shows a dash and reports `aria-checked="mixed"`; `invalid` marks it with `aria-invalid` and `data-invalid`.
+
+#### TextAreaField
+
+A multi-line text input with its label, hints, error and, given `maxLength`, a character count. It takes the same field props as `TextField` (minus the icon) and grows downwards. `label` is required: `hideLabel` hides it on screen, not from screen readers.
+
+```tsx
+import { TextAreaField } from "../../ui/components/form/text_area_field/TextAreaField";
+
+<TextAreaField
+    label="Notes"
+    hints="Plain text only"
+    value={notes}
+    onChange={(event) => setNotes(event.target.value)}
+/>;
+```
+
+**Props:** everything Headless UI's `Textarea` takes except `id`, plus `label`, `hideLabel`, `hints`, `errorMessage`, `hideErrors`, `showRequiredLabel` and `fieldClassName`. `className` goes on the text area. `onChange` receives the native change event. For one line, use `TextField`.
+
+`Textarea` is the bare control, drawn like `Input`. Outside a `Field` it needs an `aria-label`.
+
+#### RadioGroupField
+
+A group of radio options, one chosen at a time, each with its label and an optional hint. Clicking a label chooses its option, and the arrow keys move between them. `Radio` is the bare control, for use inside a Headless UI `RadioGroup`; outside a `Field` it needs an `aria-label`.
+
+```tsx
+import { RadioGroupField } from "../../ui/components/form/radio_group_field/RadioGroupField";
+
+<RadioGroupField
+    label="Update mode"
+    options={[
+        { value: "replace", label: "Replace", hint: "Updates every profile." },
+        { value: "alongside", label: "Install alongside" },
+    ]}
+    value={mode}
+    onChange={setMode}
+/>;
+```
+
+**Props:** `options` (each with `value`, `label`, and optionally `hint`, `disabled` and `testId`), `value` (the chosen option's value, or `undefined` while none is chosen), `onChange(value: string)`, and `label`, which names the group for screen readers and isn't shown. Everything else Headless UI's `RadioGroup` takes passes through, except `id`. `className` goes on the group.
+
+#### Building blocks
+
+`TextField`, `TextAreaField`, `SelectField`, `CheckboxField` and `SwitchField` are these parts put together. Use them directly for a layout it doesn't cover:
+
+```tsx
+import { Description } from "../../ui/components/form/field/Description";
+import { ErrorMessage } from "../../ui/components/form/field/ErrorMessage";
+import { Field } from "../../ui/components/form/field/Field";
+import { Label } from "../../ui/components/form/field/Label";
+import { Input } from "../../ui/components/form/input/Input";
+
+<Field disabled={disabled}>
+    <Label required>Name</Label>
+    <Input required invalid={!!error} />
+    <Description>Shown to other users</Description>
+    {!!error && <ErrorMessage>{error}</ErrorMessage>}
+</Field>;
+```
+
+- `Field` groups a control with its parts. `disabled` cascades to all of them.
+- `Label` names the control. `required` only adds "(Required)", so set `required` on the control as well. If you give the control its own `id`, pass the same value as `htmlFor`, or clicking the label stops focusing the control.
+- `Description` and `ErrorMessage` are both added to the control's `aria-describedby`, in the order they render. `ErrorMessage` is a `Description` styled as an error; pair it with `invalid` on the control.
+- `Input` and `Select` are the bare controls. Outside a `Field` they need an `aria-label`. `Select` draws its own chevron, so it wraps the native select in `nxm-field-control`, the same wrapper `TextField` puts around its input for the icon; its ref and `className` go on the select.
+
+Every part styles itself off the attributes Headless UI sets (`data-disabled`, `data-invalid`, `data-hover`), like `Switch`. The one exception is the focus style of `Input` and `Select`, which uses `:focus`: Headless UI sets `data-focus` only for keyboard focus, and these should show focus however they got it.
 
 ### Switch
 
@@ -379,7 +503,7 @@ Built on Headless UI's **`Checkbox`**, not its `Switch`: ARIA only allows `aria-
 ```tsx
 import { Switch } from "../../ui/components/form/switch/Switch";
 
-// Controlled on/off — onChange receives the new checked value, not an event
+// Controlled on/off, named by aria-label outside a Field. onChange receives the new checked value, not an event
 <Switch checked={enabled} onChange={setEnabled} aria-label="Enable" />
 
 // Semi-on (mixed) — e.g. a "select all" with some children on
@@ -391,7 +515,17 @@ import { Switch } from "../../ui/components/form/switch/Switch";
 />
 ```
 
-**Props:** Headless UI `Checkbox` props — `checked`, `onChange(checked: boolean)`, `disabled`, `indeterminate`, `name`/`value`/`form` for form submission, `defaultChecked` for uncontrolled use — plus `className`.
+**Props:** Headless UI `Checkbox` props — `checked`, `onChange(checked: boolean)`, `disabled`, `indeterminate`, `name`/`value`/`form` for form submission, `defaultChecked` for uncontrolled use — plus `className`. The ref goes to the switch.
+
+`Switch` is the bare control: outside a `Field` it needs an `aria-label`. For a switch with its label beside it, use `SwitchField`:
+
+```tsx
+import { SwitchField } from "../../ui/components/form/switch_field/SwitchField";
+
+<SwitchField label="Auto-update" hints="Checks when Vortex starts" checked={on} onChange={setOn} />;
+```
+
+`SwitchField` takes everything `Switch` does except `id`, plus `label` (required), `hideLabel`, `hints` and `fieldClassName`. Clicking the label toggles the switch, and `disabled` covers both. There's no `errorMessage`: a switch is never invalid. To lay the parts out differently, such as the label before the switch, compose `Field`, `Label` and `Switch` yourself.
 
 The track and thumb style themselves off the attributes Headless UI sets (`data-checked`, `data-indeterminate`, `data-disabled`, `data-hover`, `data-active`, `data-focus`) rather than any state we derive ourselves. It renders a `<span role="checkbox">`, so pass `name` if the value needs to take part in form submission.
 
@@ -418,10 +552,9 @@ A floating panel of arbitrary interactive content built on Headless UI `Popover`
 import { Popover } from "../../ui/components/popover/Popover";
 import { PopoverButton } from "../../ui/components/popover/PopoverButton";
 import { PopoverPanel } from "../../ui/components/popover/PopoverPanel";
-import { mdiTune } from "@mdi/js";
 
 <Popover>
-    <PopoverButton appearance="subdued" brand="neutral" leftIconPath={mdiTune} size="sm" />
+    <PopoverButton appearance="subdued" brand="neutral" leftIcon="tune" size="sm" />
 
     <PopoverPanel>{/* pickers, switches, buttons, … */}</PopoverPanel>
 </Popover>;
@@ -476,7 +609,7 @@ Give the panel `nxm-popover-panel-dropdown`. The base panel is sized for label-a
 ```tsx
 const helpAction: IMenuAction = {
     label: t("Help"),
-    iconPath: mdiHelpCircleOutline,
+    icon: "help",
     panelRole: "menu",
     panel: ({ close, dismiss }) => (
         <PopoverMenu actions={helpRows} label={t("Help")} onClose={close} onSelect={dismiss} />
@@ -575,6 +708,14 @@ Width is CSS, not a prop. `.nxm-tooltip` caps at 320px; pass a utility class to 
 
 That only moves the design cap. The positioner around the bubble is still clamped to the space left in the window, so a wider cap can't push the tooltip off an edge.
 
+Stacking lives on the positioner, not the bubble, so `className` can't change it. Tooltips sit above modals (`--z-index-tooltip`); one that shows itself rather than answering a hover, like the download flyout, should sit under the modal scrim instead. Pass `positionerClassName`:
+
+```tsx
+<Tooltip persistent positionerClassName="z-(--z-index-flyout)" customContent={<Flyout />}>
+    …
+</Tooltip>
+```
+
 > **The trigger must forward a ref to a DOM node.** `Button` does; `Icon`, `Pill` and bare text do not — wrap those in a `<span className="inline-flex">`.
 
 `placement` is a preference, not a guarantee: the collision middleware treats it as the starting point and moves the tooltip if it wouldn't fit. Tooltips also open on keyboard focus and dismiss on Escape, and are non-interactive by default so they can never swallow a click aimed at what's underneath.
@@ -589,7 +730,7 @@ import { TooltipDelayGroup } from "../../ui/components/tooltip/TooltipDelayGroup
 <TooltipDelayGroup>
     {actions.map((action) => (
         <Tooltip key={action.label} content={action.label}>
-            <Button aria-label={action.label} leftIconPath={action.iconPath} />
+            <Button aria-label={action.label} leftIcon={action.icon} />
         </Tooltip>
     ))}
 </TooltipDelayGroup>;
@@ -601,7 +742,7 @@ It renders no DOM of its own. Where the row needs a layout element anyway, pass 
 <TooltipDelayGroup as="div" className="flex items-center gap-x-1">
     {actions.map((action) => (
         <Tooltip key={action.label} content={action.label}>
-            <Button aria-label={action.label} leftIconPath={action.iconPath} />
+            <Button aria-label={action.label} leftIcon={action.icon} />
         </Tooltip>
     ))}
 </TooltipDelayGroup>
@@ -637,45 +778,21 @@ import { Pagination } from "../../ui/components/pagination/Pagination";
 
 ### Table
 
-Reusable, column-driven data table. Declare the columns and pass the data; sorting, per-column filtering, column show/hide, grouping, optional pagination and an empty state are handled internally.
-
-**Defaults:** filters and the column toggle auto-enable when a column opts in; pagination is **off** unless `pageSize` is set; headers are always left-aligned.
+Column-driven table drawn as one CSS grid: the column widths make its tracks and every row is a subgrid of them, so cells line up without a `<table>`. It carries the grid roles. Work in progress towards the new table design; on the Mods page it shows in place of the classic table while the toolbar's beta view is on.
 
 ```tsx
 import { Table } from "../../ui/components/table/Table";
-import type { IColumnDef } from "../../ui/components/table/Table.types";
+import type { ITableColumn } from "../../ui/components/table/Table.types";
 
-const columns: Array<IColumnDef<Mod>> = [
-    { id: "name", header: "Name", getValue: (m) => m.name, sortable: true, filter: { type: "text" } },
-    {
-        id: "category",
-        header: "Category",
-        getValue: (m) => m.category,
-        groupable: true,
-        filter: { type: "select", options: [{ label: "UI", value: "UI" }] },
-    },
-    {
-        id: "downloads",
-        header: "Downloads",
-        getValue: (m) => m.downloads,
-        sortable: true,
-        align: "right",
-        cell: (m) => m.downloads.toLocaleString(),
-    },
+const columns: Array<ITableColumn<Mod>> = [
+    { id: "name", header: "Name", cell: (m) => m.name },
+    { id: "status", header: "Status", width: "42px", cell: (m) => <Switch checked={m.enabled} /> },
 ];
 
-// No pageSize → renders every row, no pager
-<Table columns={columns} data={mods} getRowId={(m) => m.id} />
-
-// With pagination
-<Table columns={columns} data={mods} getRowId={(m) => m.id} pageSize={50} />
+<Table columns={columns} getRowId={(m) => m.id} label="Mods" rows={mods} />;
 ```
 
-**`ITableProps` fields:** `columns`, `data`, `getRowId` (required); `pageSize` (set to paginate), `caption`, `enableFilters`, `enableColumnToggle`, `enableColumnResize` (default `true`), `columnWidths` / `onColumnWidthsChange` (restore/persist resized widths), `emptyState`, `className`.
-
-**`IColumnDef` fields:** `id`, `header` (required); `getValue` (value used for sorting/filtering and the default cell), `cell` (custom renderer), `sortable`/`sortFn`, `filter` (`text` or `select`), `align` (body cells — headers are always left), `width`, `resizable` (drag-to-resize, default `true`), `hideable`/`defaultHidden` (column toggle), `groupable`/`groupValue`/`groupLabel`.
-
-**Notes:** grouping is one column at a time — collapsible groups across the full dataset, with the pager hidden while active. Columns use fixed widths, so when their total exceeds the container the table scrolls horizontally. Users can drag a header's right edge to resize a column (never narrower than its configured `width`) via the `useColumnResize` hook, and the column menu offers a "Reset column widths" action. The table itself stays state-store-agnostic: pass `columnWidths` to restore widths and handle `onColumnWidthsChange` (fired on resize-end and reset with the full px map) to persist them. All interactive state lives in the `useTableState` hook.
+**`ITableColumn` fields:** `id`, `header`, `cell` (required); `width` (a grid track, default `minmax(280px, 1fr)`, so a flexible column keeps a readable width when the columns overflow), `align` (`start` or `end`).
 
 ### Listing / ListingLoader / NoResults
 
@@ -752,46 +869,69 @@ Single-value selector built on Headless UI `Listbox` — the chosen option shows
 
 ```tsx
 import { Picker } from "../../ui/components/picker/Picker";
-import { mdiViewGrid } from "@mdi/js";
 
 <Picker options={options} value={value} onChange={setValue} />
 
 // Style the trigger via `button` — it forwards all Button props (+ showChevron)
 <Picker
-  button={{ size: "xs", leftIconPath: mdiViewGrid }}
+  button={{ size: "xs", leftIcon: { name: "grid_view", filled: true } }}
   options={options}
   value={value}
   onChange={setValue}
 />
 ```
 
-**Props:** `options` (`{ label, value, iconPath?/icon? }[]`), `value`, `onChange` (required); `button` (props forwarded to the trigger `ListboxButton` — Button props + `showChevron`; any `children` is ignored, the label is always the selected option), `placement` (`"left"`/`"right"`, default `"right"` — which edge of the trigger the panel aligns to), `className`.
+**Props:** `options` (`{ label, value, icon? }[]`), `value`, `onChange` (required); `button` (props forwarded to the trigger `ListboxButton` — Button props + `showChevron`; any `children` is ignored, the label is always the selected option), `placement` (`"left"`/`"right"`, default `"right"` — which edge of the trigger the panel aligns to), `className`.
 
 ### Pill
 
-Compact, rounded label for tags and statuses. Renders as a non-interactive `div` by default, or as a `button` when given `as="button"`. Accepts an icon via either `iconPath` (an MDI/Nexus path string) or `icon` (a custom node) — not both.
+Compact, rounded label for tags and statuses. Renders as a non-interactive `div` by default, or as a `button` when given `as="button"`. Accepts an icon via `icon`.
 
-**Defaults:** `pillType="default"`
+**Defaults:** `brand="neutral"`, `appearance="subdued"` — only set these when you need something different.
 
 ```tsx
 import { Pill } from "../../ui/components/pill/Pill";
-import { mdiCheckCircleOutline, mdiTag } from "@mdi/js";
 
-// Variants
+// Uses defaults (neutral, subdued)
 <Pill>Default</Pill>
-<Pill pillType="success" iconPath={mdiCheckCircleOutline}>Success</Pill>
-<Pill pillType="none">Unstyled</Pill>
+
+// Brand tints the icon, so it needs one to say anything
+<Pill brand="success" icon="check_circle">Enabled</Pill>
+
+// For laying over a scrim — game art, a modal backdrop
+<Pill appearance="scrim" icon={{ path: nxmSteam }}>Steam</Pill>
+
+// Opt out of the treatment entirely
+<Pill appearance="none">Unstyled</Pill>
 
 // With an icon (path or custom node)
-<Pill iconPath={mdiTag}>Tagged</Pill>
-<Pill icon={<Icon path={mdiTag} size="none" />}>Custom node</Pill>
+<Pill icon={{ name: "sell", filled: true }}>Tagged</Pill>
+<Pill icon={<Icon name="sell" filled size="none" />}>Custom node</Pill>
 
 // As an interactive button
 <Pill as="button" onClick={handleClick}>Clickable</Pill>
 <Pill as="button" disabled>Disabled</Pill>
 ```
 
-**Types:** `default`, `success`, `none` (opts out of styling) — more variants to come
+**Brands:** `primary`, `info`, `neutral`, `light`, `success`, `danger`, `warning`, `premium` — Button's set plus `warning`, which the design uses on pills but not on buttons, and `light`.
+
+`light` is the achromatic brand that still wants a bright icon: `neutral` lets the icon sit at the label's weight, `light` lifts it to the strong step. It is the one brand whose icon colour depends on the appearance — the solid `--color-neutral-strong` on a surface, the fixed `--color-on-scrim-strong` over a scrim.
+
+**Appearances:** `subdued` (the bordered, transparent treatment, coloured from the theme-relative ramps), `scrim` (the same shape, painting a scrim fill of its own and drawing its achromatic colours from the fixed Scrim families, so it reads over artwork whatever the theme) and `none`, which opts out of both.
+
+`scrim` carries its own fill (`--color-scrim-moderate`), so it reads over artwork on its own and does not need a scrim already behind it. Hover firms the border rather than washing the fill.
+
+In both appearances hover lifts **the label** to the strong step, leaving the icon on whatever its brand gives it. See the **Scrims** section in `docs/frontend.md` for when a scrim is the right tool.
+
+> [!NOTE]
+> The name follows what the component paints, not what it sits on. A component that **is** a scrim takes `appearance="scrim"`; text laid **on** someone else's scrim draws from the `on-scrim` ramp instead — see `Typography`'s `neutral-on-scrim` brand.
+
+> [!NOTE]
+> `brand` still tints the icon from the ordinary brand ramps, which _are_ theme-relative. A branded icon on a scrim will shift with the theme; only the achromatic parts are pinned. `neutral` is fully scrim-safe.
+
+`brand` tints **only the icon**, leaving the label and border alone so a pill stays the quiet thing it is. A pill with no icon therefore looks the same whatever its brand — give it an `icon` if the colour needs to read.
+
+> **Migration note:** `pillType` was replaced by `brand` + `appearance`. `pillType="default"` is now the default (drop it), `pillType="success"` is `brand="success"`, and `pillType="none"` is `appearance="none"`.
 
 ### Image
 
@@ -806,7 +946,7 @@ import { Image } from "../../ui/components/image/Image";
 <Image alt="Preview" src={url} imageType="mod" isBlurred />
 ```
 
-**Image types:** `collection` (4:5 portrait), `mod` (16:9 landscape), `other` (sized by container)
+**Image types:** `avatar` (1:1 square), `collection` (4:5 portrait), `game` (2:3 portrait), `mod` (16:9 landscape), `other` (sized by container)
 
 #### AdultAwareImage
 
@@ -826,7 +966,7 @@ import { AdultAwareImage } from "../../ui/components/image/AdultAwareImage";
 Small diamond badge denoting premium membership.
 
 ```tsx
-import { PremiumBadge } from "../../ui/components/premium_badge/PremiumBadge";
+import { PremiumBadge } from "../../ui/components/badges/premium_badge/PremiumBadge";
 
 <PremiumBadge />;
 ```
@@ -843,6 +983,38 @@ import { Bullet } from "../../ui/components/bullet/Bullet";
 
 // Override size and colour
 <Bullet className="size-1 bg-neutral-subdued" />
+```
+
+### ViewPicker
+
+The views of a list people can switch between and add their own to, like the Mods
+table's. Pass the `views` in order, built-in first; a view with `actions` is one of
+the user's own, gets a "…" menu, and the divider goes before the first of them.
+`onAddView` puts a "+" at the end. Views aren't tabs (no panels), so each is a
+`ViewButton`, a `<button aria-pressed>`.
+
+The views are one Tab stop: the one last focused while focus is in the picker,
+else the open one, else the first. The arrow keys move focus between them,
+wrapping, Home and End go to either end, and Space or Enter opens one; with a
+modifier held they're left alone. A user's view opens its menu from its "…", a
+right-click, Shift+F10 or the Down arrow; the "…" sits beside the view's button,
+in the same pill, out of the Tab order. The "+" keeps its own Tab stop.
+
+```tsx
+<ViewPicker
+    label={t("Views")}
+    selectedView={selected}
+    views={[
+        { id: "all", label: t("All mods") },
+        {
+            id: custom.id,
+            label: custom.label,
+            actions: [[{ label: t("Rename view"), onClick: rename }]],
+        },
+    ]}
+    onAddView={add}
+    onSelectView={setSelected}
+/>
 ```
 
 ## Adding New Components

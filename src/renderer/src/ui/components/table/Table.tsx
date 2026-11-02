@@ -1,292 +1,460 @@
-import { mdiArrowDown, mdiArrowUp, mdiFormatListGroup, mdiUnfoldMoreHorizontal } from "@mdi/js";
-import React, { useMemo } from "react";
+import React, {
+  type CSSProperties,
+  Fragment,
+  type MouseEvent,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { useTranslation } from "react-i18next";
 
-import { Input } from "@/ui/components/form/input/Input";
-import { Icon } from "@/ui/components/icon/Icon";
-import { Pagination } from "@/ui/components/pagination/Pagination";
+import {
+  ContextMenu,
+  contextMenuPosition,
+  type IContextMenuPosition,
+  openedFromKeyboard,
+} from "@/ui/components/context_menu/ContextMenu";
+import { Toolbar } from "@/ui/components/toolbar/Toolbar";
+import { ToolbarGroup } from "@/ui/components/toolbar/ToolbarGroup";
+import { ToolbarMenu } from "@/ui/components/toolbar/ToolbarMenu";
 import { joinClasses } from "@/ui/utils/joinClasses";
 
-import type { IColumnDef, IColumnFilter, ITableProps } from "./Table.types";
-import { TableColumnToggle } from "./TableColumnToggle";
-import { TableFilterSelect } from "./TableFilterSelect";
+import type { ITableGroup, ITableProps, TableItem } from "./Table.types";
+import { TableGroup } from "./TableGroup";
+import { tableGroupBlocks } from "./tableGroupBlocks";
+import { tableGroupMenuActions } from "./TableGroupMenu";
 import { TableGroupRow } from "./TableGroupRow";
-import { TableEmptyRow, TableRow } from "./TableRow";
-import { useColumnResize } from "./useColumnResize.hook";
-import { useTableState } from "./useTableState.hook";
+import { TableHeader } from "./TableHeader";
+import { TableRow } from "./TableRow";
+import { TableSpacer } from "./TableSpacer";
+import { useTableSelection } from "./useTableSelection.hook";
+import { useTableSort } from "./useTableSort.hook";
+import { useTableVirtualizer } from "./useTableVirtualizer.hook";
+
+// Fixed, so the virtualiser knows every row's height without measuring; table.css reads them.
+const ROW_HEIGHT = 40;
+const GROUP_ROW_HEIGHT = 48;
+const GROUP_ROW_GAP = 4;
+
+/** A column without a width shares what's left, but never shrinks past this when columns overflow. */
+const DEFAULT_COLUMN_WIDTH = "minmax(280px, 1fr)";
 
 /**
- * Reads a column's configured `width` as a pixel number so it can act as the
- * resize floor. Non-pixel widths (e.g. `"20%"`) and undefined return undefined,
- * falling back to the resize hook's default minimum.
+ * A column-driven table drawn as one CSS grid: the columns' widths make its tracks, and
+ * every row is a subgrid of them, so cells line up across rows without a `<table>`.
+ * Carries the grid roles, so it reads as a table to assistive tech; grouped, it's a
+ * treegrid whose group rows collapse. Only the rows in view render, against the page's
+ * scroller, under a header that sticks to it. A right-click on a row offers its `rowMenu`, once
+ * the row is selected. Every selected row shows what's in it as a hovered one does, so a table
+ * that shows actions in its rows decides itself what several selected rows show.
+ *
+ * Each group's heading and rows render in a rowgroup as tall as all its rows, rendered or not,
+ * so the heading sticks under the header while they pass and the next group's pushes it off.
+ *
+ * A group heading has a "…" at its end, in the sticky column or the last, and a right-click menu,
+ * both listing the same items, drawn by the toolbar components as a row's are. First the table's
+ * built-in items, each with a stable id (`collapse`, `collapse-all`, `select-all`): collapsing or
+ * expanding the group or every group, and selecting its rows. Then the page's `groupMenu` actions.
+ * The heading's toolbar counts every click through `groupTracking`, as a row's toolbar counts its
+ * own; the built-ins say in `trackingProperties` which way they went.
+ *
+ * Given `focusGroupId`, it opens that group and scrolls it to the top once it has it; the group
+ * opens while rendering, so its rows are counted before it's scrolled to.
  */
-const parsePxWidth = (width: string | undefined): number | undefined => {
-  if (!width) {
-    return undefined;
-  }
-  const match = /^(\d+(?:\.\d+)?)px$/.exec(width.trim());
-  return match ? Number(match[1]) : undefined;
-};
-
-const sortIconPath = (state: "asc" | "desc" | "none") => {
-  if (state === "asc") {
-    return mdiArrowUp;
-  }
-  if (state === "desc") {
-    return mdiArrowDown;
-  }
-
-  return mdiUnfoldMoreHorizontal;
-};
-
-const ColumnFilterControl = <T,>({
-  column,
-  filter,
-  value,
-  onChange,
-}: {
-  column: IColumnDef<T>;
-  filter: IColumnFilter<T>;
-  value: string;
-  onChange: (value: string) => void;
-}) => {
-  const label = `Filter by ${column.header}`;
-  const id = `nxm-table-filter-${column.id}`;
-
-  if (filter.type === "select") {
-    return (
-      <TableFilterSelect
-        id={id}
-        label={label}
-        options={filter.options}
-        placeholder={filter.placeholder ?? "Select..."}
-        value={value}
-        onChange={onChange}
-      />
-    );
-  }
-
-  return (
-    <Input
-      hideLabel={true}
-      id={id}
-      label={label}
-      placeholder={filter.placeholder ?? "Filter..."}
-      value={value}
-      onChange={(event) => onChange(event.target.value)}
-    />
-  );
-};
-
-export const Table = <T,>({
+export const Table = <T, G extends ITableGroup<T> = ITableGroup<T>>({
   columns,
-  data,
+  rows,
+  groups,
   getRowId,
-  pageSize,
-  caption,
+  label,
+  toolbar,
+  footer,
+  empty,
+  defaultSort,
   className,
-  enableFilters,
-  enableColumnToggle,
-  enableColumnResize = true,
-  columnWidths: initialColumnWidths,
-  onColumnWidthsChange,
-  emptyState,
-}: ITableProps<T>) => {
-  const {
-    visibleColumns,
-    hiddenColumnIds,
-    pageData,
-    groups,
-    groupByColumnId,
-    collapsedGroups,
-    sort,
-    filters,
-    currentPage,
-    totalRecords,
-    toggleSort,
-    setColumnFilter,
-    setColumnHidden,
-    toggleGroupBy,
-    setGroupCollapsed,
-    setPage,
-  } = useTableState({ columns, data, pageSize });
+  selectable = false,
+  getRowLabel,
+  selectedIds,
+  onSelectedIdsChange,
+  rowMenu,
+  groupMenu,
+  groupTracking,
+  focusGroupId,
+  onGroupFocused,
+  onMenuOpen,
+}: ITableProps<T, G>) => {
+  const { t } = useTranslation();
+  const { sort, sortRows, toggleSort } = useTableSort(columns, defaultSort);
 
-  const { columnWidths, handleResizeStart, hasCustomWidths, resetColumnWidths } = useColumnResize({
-    initialWidths: initialColumnWidths,
-    onChange: onColumnWidthsChange,
-  });
-
-  const showFilters = enableFilters ?? columns.some((column) => !!column.filter);
-  const showColumnToggle =
-    enableColumnToggle ?? columns.some((column) => column.hideable !== false);
-
-  const lastColumnId = visibleColumns[visibleColumns.length - 1]?.id;
-  const colCount = visibleColumns.length;
-
-  const captionId = useMemo(
-    () => (caption ? `nxm-table-caption-${caption.replace(/\s+/g, "-").toLowerCase()}` : undefined),
-    [caption],
+  // Each row once, though a row in two groups shows in both.
+  const rowIds = useMemo(
+    () => [...new Set((rows ?? groups?.flatMap((group) => group.rows) ?? []).map(getRowId))],
+    [getRowId, groups, rows],
   );
 
-  const isEmpty = groups ? groups.length === 0 : pageData.length === 0;
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set());
 
-  // Once columns have custom widths, every visible column is pinned to an
-  // explicit pixel width (see useColumnResize). Sizing the table to their exact
-  // sum lets it grow past the container — so widening one column scrolls
-  // horizontally rather than stealing width from the others. A `width: auto`
-  // table would instead be capped at the container and redistribute the deficit.
-  const resizedWidths = visibleColumns.map((column) => columnWidths[column.id]);
-  const tableWidth =
-    hasCustomWidths && resizedWidths.every((width) => typeof width === "number")
-      ? resizedWidths.reduce((sum, width) => sum + width, 0)
+  const toggle = (groupId: string) =>
+    setCollapsed((previous) => {
+      const next = new Set(previous);
+      if (!next.delete(groupId)) {
+        next.add(groupId);
+      }
+      return next;
+    });
+
+  const [menu, setMenu] = useState<
+    | { position: IContextMenuPosition; kind: "row"; rowId: string }
+    | { position: IContextMenuPosition; kind: "group"; groupId: string }
+  >();
+
+  const menuGroup =
+    menu?.kind === "group" ? groups?.find((group) => group.id === menu.groupId) : undefined;
+
+  const menuRow =
+    menu?.kind === "row"
+      ? (rows ?? groups?.flatMap((group) => group.rows))?.find(
+          (row) => getRowId(row) === menu.rowId,
+        )
       : undefined;
 
-  return (
-    <div className={joinClasses(["nxm-table-wrapper", className])}>
-      <div className="nxm-table-scroll">
-        <table
-          aria-describedby={captionId}
-          className="nxm-table"
-          style={tableWidth ? { width: tableWidth } : undefined}
-        >
-          {!!caption && (
-            <caption className="sr-only" id={captionId}>
-              {caption}
-            </caption>
-          )}
+  // Closed while rendering once what it was opened on is gone, so it never shows a frame for nothing.
+  if ((menu?.kind === "group" && !menuGroup) || (menu?.kind === "row" && menuRow === undefined)) {
+    setMenu(undefined);
+  }
 
-          <colgroup>
-            {visibleColumns.map((column) => {
-              const width = columnWidths[column.id] ?? column.width;
-              return <col key={column.id} style={width ? { width } : undefined} />;
-            })}
-          </colgroup>
+  // Every row in order, a group's under it while it's open, as the virtualiser counts them.
+  const items = useMemo<Array<TableItem<T, G>>>(() => {
+    if (groups === undefined) {
+      return sortRows(rows).map((row) => ({ kind: "row", key: getRowId(row), row }));
+    }
 
-          <thead className="nxm-table-head">
-            <tr>
-              {visibleColumns.map((column) => {
-                const sortState = sort?.columnId === column.id ? sort.direction : ("none" as const);
-                const ariaSort =
-                  sort?.columnId === column.id
-                    ? sort.direction === "asc"
-                      ? "ascending"
-                      : "descending"
-                    : "none";
+    return groups.flatMap((group): Array<TableItem<T, G>> => {
+      const expanded = !collapsed.has(group.id);
 
-                return (
-                  <th
-                    aria-sort={column.sortable ? ariaSort : undefined}
-                    className="nxm-table-th"
-                    data-column-id={column.id}
-                    key={column.id}
-                    scope="col"
-                  >
-                    <div className="nxm-table-th-content">
-                      {column.sortable ? (
-                        <button
-                          className="nxm-table-sort"
-                          type="button"
-                          onClick={() => toggleSort(column.id)}
-                        >
-                          {column.header}
+      const groupItem: TableItem<T, G> = {
+        kind: "group",
+        key: `group:${group.id}`,
+        group,
+        expanded,
+      };
 
-                          <Icon
-                            className={joinClasses("nxm-table-sort-icon", {
-                              "nxm-table-sort-icon-active": sortState !== "none",
-                            })}
-                            path={sortIconPath(sortState)}
-                            size="sm"
-                          />
-                        </button>
-                      ) : (
-                        column.header
-                      )}
+      if (!expanded) {
+        return [groupItem];
+      }
 
-                      {column.groupable && (
-                        <button
-                          aria-label={`Group by ${column.header}`}
-                          aria-pressed={groupByColumnId === column.id}
-                          className={joinClasses("nxm-table-group", {
-                            "nxm-table-group-active": groupByColumnId === column.id,
-                          })}
-                          title={`Group by ${column.header}`}
-                          type="button"
-                          onClick={() => toggleGroupBy(column.id)}
-                        >
-                          <Icon path={mdiFormatListGroup} size="sm" />
-                        </button>
-                      )}
+      return [
+        groupItem,
+        ...sortRows(group.rows).map(
+          (row): TableItem<T, G> => ({
+            kind: "row",
+            key: `${group.id}:${getRowId(row)}`,
+            row,
+            level: 2,
+          }),
+        ),
+      ];
+    });
+  }, [collapsed, getRowId, groups, rows, sortRows]);
 
-                      {showColumnToggle && column.id === lastColumnId && (
-                        <TableColumnToggle
-                          canResetWidths={hasCustomWidths}
-                          columns={columns}
-                          hiddenColumnIds={hiddenColumnIds}
-                          onResetWidths={enableColumnResize ? resetColumnWidths : undefined}
-                          onToggleColumn={setColumnHidden}
-                        />
-                      )}
-                    </div>
+  const shownRows = useMemo(
+    () =>
+      items.flatMap((item) =>
+        item.kind === "row" ? [{ key: item.key, id: getRowId(item.row) }] : [],
+      ),
+    [getRowId, items],
+  );
 
-                    {enableColumnResize && column.resizable !== false && (
-                      <span
-                        aria-hidden={true}
-                        className="nxm-table-resize-handle"
-                        onPointerDown={handleResizeStart(column.id, parsePxWidth(column.width))}
-                      />
-                    )}
-                  </th>
-                );
-              })}
-            </tr>
+  const selection = useTableSelection(rowIds, shownRows, selectedIds, onSelectedIdsChange);
 
-            {showFilters && (
-              <tr className="nxm-table-filter-row">
-                {visibleColumns.map((column) => (
-                  <th className="nxm-table-filter-cell" key={column.id} scope="col">
-                    {column.filter && (
-                      <ColumnFilterControl
-                        column={column}
-                        filter={column.filter}
-                        value={filters[column.id] ?? ""}
-                        onChange={(value) => setColumnFilter(column.id, value)}
-                      />
-                    )}
-                  </th>
-                ))}
-              </tr>
-            )}
-          </thead>
+  const groupMenuOptions = (group: G) => ({
+    allSelected:
+      !!group.rows.length && group.rows.every((row) => selection.selected.has(getRowId(row))),
+    expanded: !collapsed.has(group.id),
+    onDeselectAll: selectable ? () => selection.remove(group.rows.map(getRowId)) : undefined,
+    onSelectAll: selectable ? () => selection.add(group.rows.map(getRowId)) : undefined,
+    onSetAllExpanded: (expanded: boolean) =>
+      setCollapsed(new Set(expanded ? [] : (groups ?? []).map((other) => other.id))),
+    onToggle: () => toggle(group.id),
+  });
 
-          <tbody className="nxm-table-body">
-            {isEmpty && <TableEmptyRow colSpan={colCount} emptyState={emptyState} />}
+  const groupActions = (group: G) => [
+    ...tableGroupMenuActions({ ...groupMenuOptions(group), t }),
+    ...(groupMenu?.(group) ?? []),
+  ];
 
-            {groups
-              ? groups.map((group) => (
-                  <TableGroupRow
-                    collapsed={collapsedGroups.has(group.key)}
-                    colSpan={colCount}
-                    columns={visibleColumns}
-                    getRowId={getRowId}
-                    group={group}
-                    key={group.key || "__empty"}
-                    onToggleCollapsed={(collapsed) => setGroupCollapsed(group.key, collapsed)}
-                  />
-                ))
-              : pageData.map((row) => (
-                  <TableRow columns={visibleColumns} key={getRowId(row)} row={row} />
-                ))}
-          </tbody>
-        </table>
-      </div>
+  const getItemKey = useCallback((index: number) => items[index].key, [items]);
+  const getItemSize = useCallback(
+    (index: number) =>
+      items[index].kind === "group" ? GROUP_ROW_HEIGHT + GROUP_ROW_GAP : ROW_HEIGHT,
+    [items],
+  );
 
-      {!groups && !!pageSize && (
-        <Pagination
-          className="nxm-table-pagination"
-          currentPage={currentPage}
-          recordsPerPage={pageSize}
-          totalRecords={totalRecords}
-          onPaginationUpdate={(page) => setPage(page)}
+  const stickyIndexes = useMemo(
+    () => items.flatMap((item, index) => (item.kind === "group" ? [index] : [])),
+    [items],
+  );
+
+  const virtual = useTableVirtualizer({
+    count: items.length,
+    getItemKey,
+    getItemSize,
+    stickyIndexes,
+  });
+
+  const hasFocusGroup = !!focusGroupId && !!groups?.some((group) => group.id === focusGroupId);
+
+  if (hasFocusGroup && collapsed.has(focusGroupId)) {
+    const next = new Set(collapsed);
+    next.delete(focusGroupId);
+    setCollapsed(next);
+  }
+
+  const { ready, scrollToIndex } = virtual;
+
+  useEffect(() => {
+    if (!hasFocusGroup || !ready) {
+      return;
+    }
+
+    const index = items.findIndex((item) => item.key === `group:${focusGroupId}`);
+    if (index === -1) {
+      return;
+    }
+
+    scrollToIndex(index);
+    onGroupFocused?.();
+  }, [focusGroupId, hasFocusGroup, items, onGroupFocused, ready, scrollToIndex]);
+
+  const revealWidth = columns.find((column) => column.sticky === "end")?.revealWidth;
+
+  // The rows in the sticky head, which come before the table's own in aria-rowindex.
+  const headRows = toolbar ? 2 : 1;
+  const showsEmpty = items.length === 0 && !!empty;
+  // The rows after the head: the items, or what stands in for them.
+  const bodyRows = showsEmpty ? 1 : items.length;
+
+  const starts = useMemo(() => {
+    const tops = [0];
+    items.forEach((_, index) => tops.push(tops[index] + getItemSize(index)));
+    return tops;
+  }, [getItemSize, items]);
+
+  // The toolbar grows as what's in it wraps, and the head and the scroll margins reckon with its
+  // height, so it's measured into the variable they read.
+  const toolbarRef = useRef<HTMLDivElement>(null);
+  const [toolbarHeight, setToolbarHeight] = useState<number>();
+  const hasToolbar = !!toolbar;
+
+  useLayoutEffect(() => {
+    const element = toolbarRef.current;
+    if (element === null || typeof ResizeObserver === "undefined") {
+      return undefined;
+    }
+
+    const observer = new ResizeObserver(() => setToolbarHeight(element.offsetHeight));
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [hasToolbar]);
+
+  const renderItem = (index: number) => {
+    const item = items[index];
+
+    if (item.kind === "group") {
+      return (
+        <TableGroupRow
+          columns={columns}
+          expanded={item.expanded}
+          group={item.group}
+          index={index}
+          menu={
+            <Toolbar className="ml-auto pl-1" tracking={groupTracking}>
+              <ToolbarGroup actions={groupActions(item.group)} maxVisible={0} />
+            </Toolbar>
+          }
+          rowIndex={index + headRows + 1}
+          onContextMenu={(event: MouseEvent<HTMLDivElement>) => {
+            event.preventDefault();
+            onMenuOpen?.("group", openedFromKeyboard(event) ? "keyboard" : "pointer");
+            setMenu({
+              position: contextMenuPosition(event),
+              kind: "group",
+              groupId: item.group.id,
+            });
+          }}
+          onToggle={() => toggle(item.group.id)}
         />
+      );
+    }
+
+    return (
+      <TableRow
+        checkbox={
+          selectable
+            ? selection.checkbox({ key: item.key, id: getRowId(item.row) }, getRowLabel?.(item.row))
+            : undefined
+        }
+        columns={columns}
+        index={index}
+        level={item.level}
+        row={item.row}
+        rowIndex={index + headRows + 1}
+        sortedColumnId={sort?.columnId}
+        onClick={
+          selectable
+            ? (click) => selection.click({ key: item.key, id: getRowId(item.row) }, click)
+            : undefined
+        }
+        onContextMenu={
+          rowMenu
+            ? (event) => {
+                event.preventDefault();
+                const id = getRowId(item.row);
+                const inSelection =
+                  selectable && selection.selected.has(id) && selection.selected.size > 1;
+                onMenuOpen?.(
+                  inSelection ? "selection" : "row",
+                  openedFromKeyboard(event) ? "keyboard" : "pointer",
+                );
+                if (selectable) {
+                  selection.contextClick({ key: item.key, id });
+                }
+                setMenu({
+                  position: contextMenuPosition(event),
+                  kind: "row",
+                  rowId: getRowId(item.row),
+                });
+              }
+            : undefined
+        }
+      />
+    );
+  };
+
+  const blocks = tableGroupBlocks(
+    virtual.items.map(({ index }) => index),
+    stickyIndexes,
+    starts,
+  );
+
+  return (
+    <div
+      aria-label={label}
+      aria-rowcount={bodyRows + headRows + (footer ? 1 : 0)}
+      className={joinClasses(["nxm-table", className])}
+      data-sticky-reveal={revealWidth ? "" : undefined}
+      data-toolbar={toolbar ? "" : undefined}
+      ref={virtual.tableRef}
+      role={groups === undefined ? "grid" : "treegrid"}
+      style={
+        {
+          "--nxm-table-row-height": `${ROW_HEIGHT}px`,
+          "--nxm-table-group-row-height": `${GROUP_ROW_HEIGHT}px`,
+          "--nxm-table-group-row-gap": `${GROUP_ROW_GAP}px`,
+          "--nxm-table-sticky-reveal": revealWidth,
+          "--nxm-table-toolbar-height": toolbarHeight ? `${toolbarHeight}px` : undefined,
+          gridTemplateColumns: [
+            "var(--nxm-table-gutter-start)",
+            ...columns.map((column) => column.width ?? DEFAULT_COLUMN_WIDTH),
+            "var(--nxm-table-gutter)",
+          ].join(" "),
+        } as CSSProperties
+      }
+      onBlur={virtual.onBlur}
+      onClick={(event) => {
+        // Between and below the rows, but not the head; a portalled panel isn't in the table.
+        const target = event.target as Element;
+        if (
+          selectable &&
+          event.currentTarget.contains(target) &&
+          target.closest('[role="row"], .nxm-table-head') === null
+        ) {
+          selection.clear();
+        }
+      }}
+      onFocus={virtual.onFocus}
+    >
+      <TableHeader
+        checkbox={selectable ? selection.header : undefined}
+        columns={columns}
+        sort={sort}
+        toolbar={toolbar}
+        toolbarRef={toolbarRef}
+        onSort={toggleSort}
+      />
+
+      {/* Always rendered, at the top of the rows: where the virtualiser measures from. */}
+      <div className="nxm-table-spacer" ref={virtual.startRef} role="presentation" />
+
+      {!groups &&
+        virtual.items.map(({ gap, index }) => (
+          <Fragment key={items[index].key}>
+            {/* Rows out of view, before a focused row kept far from the rest too. */}
+            <TableSpacer height={gap} />
+            {renderItem(index)}
+          </Fragment>
+        ))}
+
+      {!!groups &&
+        blocks.blocks.map(({ endGap, gap, heading, rows: blockRows }) => {
+          const item = items[heading];
+
+          return (
+            <Fragment key={`block:${item.key}`}>
+              <TableSpacer height={gap} />
+              <TableGroup image={item.kind === "group" ? item.group.image : undefined}>
+                {blockRows.map((row) => (
+                  <Fragment key={items[row.index].key}>
+                    <TableSpacer height={row.gap} />
+                    {renderItem(row.index)}
+                  </Fragment>
+                ))}
+                <TableSpacer height={endGap} />
+              </TableGroup>
+            </Fragment>
+          );
+        })}
+
+      <TableSpacer height={groups ? blocks.endGap : virtual.endGap} />
+
+      {showsEmpty && (
+        <div aria-rowindex={headRows + 1} className="nxm-table-empty" role="row">
+          <div aria-colspan={columns.length} className="nxm-table-empty-cell" role="gridcell">
+            {empty}
+          </div>
+        </div>
+      )}
+
+      <ContextMenu position={menu?.position} onClose={() => setMenu(undefined)}>
+        {(close) => {
+          if (menu?.kind === "group") {
+            if (!menuGroup) {
+              return null;
+            }
+
+            return (
+              <ToolbarMenu
+                actions={groupActions(menuGroup)}
+                label={t("{{name}} group actions", { name: menuGroup.label })}
+                tracking={groupTracking}
+                onSelect={close}
+              />
+            );
+          }
+
+          return menuRow === undefined ? null : rowMenu?.(menuRow, close);
+        }}
+      </ContextMenu>
+
+      {!!footer && (
+        <div aria-rowindex={bodyRows + headRows + 1} className="nxm-table-footer" role="row">
+          <div aria-colspan={columns.length} className="nxm-table-footer-cell" role="gridcell">
+            {footer}
+          </div>
+        </div>
       )}
     </div>
   );

@@ -1,8 +1,8 @@
-import type PromiseBB from "bluebird";
 import type { TFunction } from "i18next";
 import React from "react";
 import { ListGroup } from "react-bootstrap";
 
+import type { GameSource } from "../types/GameSource";
 import type { IDiscoveryResult } from "../types/IDiscoveryResult";
 import type { IGameStored } from "../types/IGameStored";
 import GameRow from "../views/GameRow";
@@ -13,8 +13,10 @@ interface IGamesListProps {
   type: string;
   gameMode: string;
   discoveredGames: { [id: string]: IDiscoveryResult };
-  onRefreshGameInfo: (gameId: string) => PromiseBB<void>;
-  onBrowseGameLocation: (gameId: string) => PromiseBB<void>;
+  /** Which Games page list the rows are in, recorded for the app_game_manage event. */
+  source?: GameSource;
+  onRefreshGameInfo: (gameId: string) => PromiseLike<void>;
+  onBrowseGameLocation: (gameId: string) => PromiseLike<void>;
 }
 
 export const GamesList = ({
@@ -23,6 +25,7 @@ export const GamesList = ({
   type,
   gameMode,
   discoveredGames,
+  source,
   onRefreshGameInfo,
   onBrowseGameLocation,
 }: IGamesListProps) => (
@@ -33,6 +36,7 @@ export const GamesList = ({
         discovery={discoveredGames[game.id]}
         game={game}
         key={game.id}
+        source={source}
         t={t}
         type={type}
         onBrowseGameLocation={onBrowseGameLocation}

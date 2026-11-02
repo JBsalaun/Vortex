@@ -3,7 +3,12 @@ import { pathToFileURL } from "url";
 
 import type * as nexusApi from "@nexusmods/nexus-api";
 import type { IRevision } from "@nexusmods/nexus-api";
-import { getErrorMessageOrDefault, unknownToError } from "@vortex/shared";
+import {
+  getErrorMessageOrDefault,
+  unknownToError,
+  VortexGameId,
+  VortexProfileId,
+} from "@vortex/shared";
 import Bluebird from "bluebird";
 import * as _ from "lodash";
 import memoize from "memoize-one";
@@ -29,8 +34,9 @@ import type { TFunction } from "../../util/i18n";
 import makeReactive from "../../util/makeReactive";
 import * as selectors from "../../util/selectors";
 import { getSafe } from "../../util/storeHelper";
-import { batchDispatch, setdefault, toPromise } from "../../util/util";
+import { batchDispatch, toPromise } from "../../util/util";
 import type { IDownload } from "../download_management/types/IDownload";
+import { isTierZeroManagedGame } from "../gamemode_management/tiered/tierZero";
 import { getGame } from "../gamemode_management/util/getGame";
 import type { IMod, IModRule } from "../mod_management/types/IMod";
 import { findDownloadByRef } from "../mod_management/util/dependencies";
@@ -60,7 +66,6 @@ import {
 import { onCollectionUpdate } from "./eventHandlers";
 import initIniTweaks from "./initweaks";
 import { makeInstall } from "./makeInstall";
-import { postprocessCollection } from "./postprocessCollection";
 import persistentReducer from "./reducers/persistent";
 import sessionReducer from "./reducers/session";
 import settingsReducer from "./reducers/settings";
@@ -69,12 +74,15 @@ import initTools from "./tools";
 import type { CollectionPauseTrigger } from "./types/CollectionPauseTrigger";
 import type { ICollection } from "./types/ICollection";
 import type { IExtendedInterfaceProps } from "./types/IExtendedInterfaceProps";
+import { applyCollectionRules } from "./util/apply_collection_rules/applyCollectionRules";
 import { cloneCollection } from "./util/cloneCollection";
+import { collectionsByMod } from "./util/collectionsByMod";
 import { createCollection } from "./util/createCollection";
 import { genDefaultsAction } from "./util/defaults";
 import { addExtension } from "./util/extension";
 import InstallDriver from "./util/InstallDriver";
-import { readCollection } from "./util/readCollection";
+import { canLinkProfile, findLinkedCollection, linkProfileToCollection } from "./util/profileLink";
+import { makeCollectionModsResolver } from "./util/resolveCollectionMods/resolveCollectionMods";
 import { getActiveInstallSession } from "./util/selectors";
 import { makeCollectionId } from "./util/transformCollection";
 import { bbProm, getUnfulfilledNotificationId } from "./util/util";
@@ -99,10 +107,12 @@ function isEditableCollection(state: IState, modIds: string[]): boolean {
 }
 
 function profileCollectionExists(api: IExtensionApi, profileId: string) {
-  const state = api.store.getState();
+  const state: IState = api.store.getState();
   const gameMode = selectors.activeGameId(state);
-  const mods = state.persistent.mods[gameMode];
-  return mods[makeCollectionId(profileId)] !== undefined;
+  return (
+    findLinkedCollection(selectors.modsForGame(state, gameMode), VortexProfileId(profileId)) !==
+    undefined
+  );
 }
 
 function onlyLocalRules(rule: IModRule) {
@@ -581,29 +591,6 @@ function genAttributeExtractor(api: IExtensionApi) {
   };
 }
 
-function generateCollectionMap(mods: { [modId: string]: IMod }): {
-  [modId: string]: IMod[];
-} {
-  const collections = Object.values(mods).filter((mod) => mod.type === MOD_TYPE);
-
-  const result: { [modId: string]: IMod[] } = {};
-
-  collections.forEach((coll) =>
-    (coll.rules ?? []).forEach((rule) => {
-      if (rule.reference.id !== undefined) {
-        setdefault(result, rule.reference.id, []).push(coll);
-      } else {
-        const installed = findModByRef(rule.reference, mods);
-        if (installed !== undefined) {
-          setdefault(result, installed.id, []).push(coll);
-        }
-      }
-    }),
-  );
-
-  return result;
-}
-
 interface IModTable {
   [modId: string]: IMod;
 }
@@ -824,7 +811,11 @@ function register(context: IExtensionContext, collectionsCB: ICallbackMap) {
     priority: 10,
     hotkey: "C",
     group: "per-game",
-    visible: () => selectors.activeGameId(context.api.getState()) !== undefined,
+    visible: () => {
+      const state = context.api.getState();
+      const activeId = selectors.activeGameId(state);
+      return activeId !== undefined && !isTierZeroManagedGame(state, VortexGameId(activeId));
+    },
     props: () => ({
       driver,
       localState,
@@ -838,7 +829,7 @@ function register(context: IExtensionContext, collectionsCB: ICallbackMap) {
       pathTool,
     }),
     onReset: () => resetPageCB?.(),
-    mdi: nxmCollectionOutline,
+    menuIcon: { path: nxmCollectionOutline },
   } as any);
 
   context.registerModType(
@@ -859,7 +850,12 @@ function register(context: IExtensionContext, collectionsCB: ICallbackMap) {
   const emptyArray = [];
   const emptyObj = {};
 
-  const collectionsMapFunc = memoize(generateCollectionMap, collectionListEqual);
+  // kept for the session so each change of mods only retests the mods that changed
+  const resolveCollectionMembers = makeCollectionModsResolver();
+  const collectionsMapFunc = memoize(
+    (mods: { [modId: string]: IMod }) => collectionsByMod(mods, resolveCollectionMembers),
+    collectionListEqual,
+  );
 
   const collectionsMap = () =>
     collectionsMapFunc(
@@ -941,38 +937,7 @@ function register(context: IExtensionContext, collectionsCB: ICallbackMap) {
     "conflict",
     {},
     "Apply Collection Rules",
-    (modIds: string[]) => {
-      const state = context.api.getState();
-      const gameId = selectors.activeGameId(state);
-      const mods = state.persistent.mods[gameId];
-      const stagingPath = selectors.installPathForGame(context.api.getState(), gameId);
-      const mod = mods[modIds[0]];
-      if (mod !== undefined && mod.type === MOD_TYPE) {
-        readCollection(context.api, path.join(stagingPath, mod.installationPath, "collection.json"))
-          .then(async (collectionInfo: ICollection) => {
-            try {
-              await postprocessCollection(context.api, gameId, mod, collectionInfo, mods);
-            } catch (err) {
-              context.api.showErrorNotification(
-                "Failed to apply collection rules",
-                unknownToError(err),
-                {
-                  message: renderModName(mod),
-                },
-              );
-            }
-          })
-          .catch((err: unknown) => {
-            context.api.showErrorNotification(
-              "Failed to read collection info",
-              unknownToError(err),
-              {
-                message: renderModName(mod),
-              },
-            );
-          });
-      }
-    },
+    (modIds: string[]) => void applyCollectionRules(context.api, modIds[0]),
     (modIds: string[]) => {
       const state = context.api.getState();
       const gameId = selectors.activeGameId(state);
@@ -1007,6 +972,21 @@ function register(context: IExtensionContext, collectionsCB: ICallbackMap) {
       );
     },
     (profileIds: string[]) => profileCollectionExists(context.api, profileIds[0]),
+  );
+
+  context.registerAction(
+    "profile-actions",
+    150,
+    "highlight-lab",
+    {},
+    "Link Collection",
+    (profileIds: string[]) => {
+      linkProfileToCollection(context.api, VortexProfileId(profileIds[0])).catch((err: unknown) =>
+        context.api.showErrorNotification("Failed to link collection", unknownToError(err)),
+      );
+    },
+    (profileIds: string[]) =>
+      canLinkProfile(context.api.getState(), VortexProfileId(profileIds[0])),
   );
 
   context.registerAction(
@@ -1580,6 +1560,17 @@ function once(api: IExtensionApi, collectionsCB: () => ICallbackMap) {
     setTimeout(() => {
       collectionsCB().editCollection?.(modId);
     }, 100);
+  });
+
+  api.events.on("remove-collection", (modId: string) => {
+    const gameId = selectors.activeGameId(api.getState());
+    removeCollection(api, gameId, modId, true).catch((err) => {
+      if (!(err instanceof UserCanceled)) {
+        api.showErrorNotification("Failed to remove collection", unknownToError(err), {
+          allowReport: !(err instanceof ProcessCanceled),
+        });
+      }
+    });
   });
 
   api.events.on("resume-collection", (gameId: string, modId: string) => {

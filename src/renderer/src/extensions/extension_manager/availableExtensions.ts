@@ -5,7 +5,6 @@ import { log } from "@/logging";
 import type { IAvailableExtension } from "../../types/extensions";
 import type { IExtensionApi } from "../../types/IExtensionContext";
 import { createVortexNexusV3Client } from "../nexus_integration/nexusV3Client";
-import { languageCodeByEnglishName } from "../settings_interface/languagemap";
 
 /**
  * Boundary to GET /v3/vortex/extensions: everything past this module works
@@ -13,46 +12,17 @@ import { languageCodeByEnglishName } from "../settings_interface/languagemap";
  */
 export type VortexAsset = components["schemas"]["VortexAsset"];
 export type VortexExtension = components["schemas"]["VortexExtension"];
+export type VortexTranslation = components["schemas"]["VortexTranslation"];
 export type VortexData = components["schemas"]["VortexData"];
 
-/**
- * Derive a locale code from a translation's mod name. The endpoint carries no
- * locale field, so match an explicit code like "(pt-BR)" or an English
- * language name like "German".
- */
-export function parseTranslationLocale(name: string): string | undefined {
-  const explicit = /\(([a-z]{2})(?:-([a-z]{2}))?\)/i.exec(name);
-  if (explicit !== null) {
-    const [, language, country] = explicit;
-    return country !== undefined
-      ? `${language.toLowerCase()}-${country.toUpperCase()}`
-      : language.toLowerCase();
-  }
-
-  const words = name
-    .toLowerCase()
-    .split(/[^\p{L}]+/u)
-    .filter((word) => word.length > 0);
-
-  // longest window first so multi-word names win over their parts; 3 covers
-  // the longest languagemap entry ("Old Church Slavonic")
-  for (let size = 3; size >= 1; size--) {
-    for (let start = 0; start + size <= words.length; start++) {
-      const code = languageCodeByEnglishName(words.slice(start, start + size).join(" "));
-      if (code !== undefined) return code;
-    }
-  }
-  return undefined;
-}
-
 /** Parse to a finite number, or undefined; blank strings are not numbers. */
-function finite(value: string | null | undefined): number | undefined {
+export function finite(value: string | null | undefined): number | undefined {
   if (value == null || value.trim().length === 0) return undefined;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
-function toAvailableExtension(
+export function toAvailableExtension(
   asset: VortexAsset,
   extras: Pick<IAvailableExtension, "type" | "gameId" | "language">,
 ): IAvailableExtension | undefined {
@@ -87,7 +57,7 @@ export function mapAvailableExtensions(data: VortexData): IAvailableExtension[] 
     ...data.translations.map((translation) =>
       toAvailableExtension(translation, {
         type: "translation",
-        language: parseTranslationLocale(translation.name),
+        language: translation.locale ?? undefined,
       }),
     ),
   ];
@@ -119,19 +89,10 @@ export function groupGameExtensionsByGameId(
 }
 
 /**
- * Keep one game extension per game: nothing stops several extensions for the
- * same game from being listed, so the most endorsed wins and the newest upload
- * breaks ties. Everything else passes through unchanged.
+ * Keep one game extension per game. The API de-dups already but this is a last effort check.
  */
-export function dedupeGameExtensions(
-  extensions: IAvailableExtension[],
-  // keyed by mod ID
-  endorsementsByModId: Record<number, number>,
-): IAvailableExtension[] {
+export function dedupeGameExtensions(extensions: IAvailableExtension[]): IAvailableExtension[] {
   const beats = (challenger: IAvailableExtension, champion: IAvailableExtension): boolean => {
-    const challengerVotes = endorsementsByModId[challenger.modId] ?? 0;
-    const championVotes = endorsementsByModId[champion.modId] ?? 0;
-    if (challengerVotes !== championVotes) return challengerVotes > championVotes;
     return challenger.timestamp > champion.timestamp;
   };
 

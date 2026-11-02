@@ -3,25 +3,31 @@
  * Demonstrates the Pill component variants and features
  */
 
-import { mdiCheck, mdiCheckCircleOutline, mdiClose, mdiStar, mdiTag } from "@mdi/js";
-import React, { useState, type ComponentProps } from "react";
+import React, { useState } from "react";
 
 import { Icon } from "@/ui/components/icon/Icon";
 import { Typography } from "@/ui/components/typography/Typography";
+import { joinClasses } from "@/ui/utils/joinClasses";
 
+import type { IPillAppearance, IPillBrand } from "./Pill";
 import { Pill } from "./Pill";
 
-type PillType = NonNullable<ComponentProps<typeof Pill>["pillType"]>;
+const BRANDS: IPillBrand[] = [
+  "neutral",
+  "light",
+  "primary",
+  "info",
+  "success",
+  "danger",
+  "warning",
+  "premium",
+];
 
 /**
- * Styled pill variants showcased in the demo. The `none` variant is intentionally
- * omitted here (it opts out of styling) and is demonstrated separately above.
- * Add new variants to this list as they are introduced.
+ * `none` is left out: it opts out of the treatment rather than being one, and is shown
+ * on its own below.
  */
-const VARIANTS: Array<{ pillType: PillType; label: string; iconPath?: string }> = [
-  { pillType: "default", label: "Default", iconPath: mdiTag },
-  { pillType: "success", label: "Success", iconPath: mdiCheckCircleOutline },
-];
+const APPEARANCES: IPillAppearance[] = ["subdued", "scrim"];
 
 export const PillDemo = () => {
   const [clicks, setClicks] = useState(0);
@@ -47,27 +53,61 @@ export const PillDemo = () => {
         <div className="flex flex-wrap items-center gap-4">
           <Pill>Default</Pill>
 
-          <Pill pillType="none">Unstyled (none)</Pill>
+          <Pill appearance="none">Unstyled (none)</Pill>
         </div>
       </div>
 
       <div className="space-y-4">
         <Typography as="h3" typographyType="heading-xs">
-          Variants
+          Brand × Appearance
         </Typography>
 
         <Typography appearance="subdued" typographyType="body-sm">
-          Each styled variant is selected with the <code>pillType</code> prop. More variants will be
-          added over time.
+          <code>brand</code> tints the icon and nothing else, so every row needs one to show its
+          colour. <code>appearance</code> carries the treatment — <code>scrim</code> paints a scrim
+          fill of its own and takes its achromatic colours from the fixed Scrim families, so it is
+          shown here on a bright ground as it would sit over artwork.
         </Typography>
 
-        <div className="flex flex-wrap items-center gap-4">
-          {VARIANTS.map(({ pillType, label, iconPath }) => (
-            <Pill iconPath={iconPath} key={pillType} pillType={pillType}>
-              {label}
-            </Pill>
-          ))}
-        </div>
+        <Typography appearance="subdued" typographyType="body-sm">
+          These are rendered <code>as="button"</code> so the hover and focus states can be seen.
+          Subdued washes a fill in on a <code>:before</code> overlay, while scrim firms its border
+          up instead; both are gated behind <code>:enabled</code>, so a plain <code>div</code> pill
+          never shows either. Each row ends with a disabled pill, which drops to 40% opacity and
+          takes no state at all.
+        </Typography>
+
+        {APPEARANCES.map((appearance) => (
+          <div className="space-y-2" key={appearance}>
+            <Typography appearance="subdued" typographyType="body-sm">
+              <code>{appearance}</code>
+            </Typography>
+
+            {/* scrim paints its own, so it is shown on a bright ground */}
+            <div
+              className={joinClasses(["flex flex-wrap items-center gap-4 rounded-sm p-3"], {
+                "bg-surface-inverted": appearance === "scrim",
+              })}
+            >
+              {BRANDS.map((brand) => (
+                <Pill
+                  appearance={appearance}
+                  as="button"
+                  brand={brand}
+                  icon="check_circle"
+                  key={brand}
+                >
+                  {brand}
+                </Pill>
+              ))}
+
+              {/* Closes each row so the disabled treatment can be read against both grounds */}
+              <Pill appearance={appearance} as="button" disabled={true} icon="check_circle">
+                disabled
+              </Pill>
+            </div>
+          </div>
+        ))}
       </div>
 
       <div className="space-y-4">
@@ -76,11 +116,11 @@ export const PillDemo = () => {
         </Typography>
 
         <div className="flex flex-wrap items-center gap-4">
-          <Pill iconPath={mdiTag}>Tagged</Pill>
+          <Pill icon={{ name: "sell", filled: true }}>Tagged</Pill>
 
-          <Pill iconPath={mdiCheck}>Verified</Pill>
+          <Pill icon="check">Verified</Pill>
 
-          <Pill icon={<Icon path={mdiStar} size="none" />}>Custom icon node</Pill>
+          <Pill icon={<Icon filled name="star" size="none" />}>Custom icon node</Pill>
         </div>
       </div>
 
@@ -98,7 +138,7 @@ export const PillDemo = () => {
             Clickable
           </Pill>
 
-          <Pill as="button" iconPath={mdiClose} onClick={() => setClicks((count) => count + 1)}>
+          <Pill as="button" icon="close" onClick={() => setClicks((count) => count + 1)}>
             With icon
           </Pill>
 

@@ -30,6 +30,8 @@ Open Visual Studio Installer and select:
 The default workload is not enough by itself. Vortex uses native Node modules,
 so `node-gyp` needs ATL, MFC, and Windows 11 SDK.
 
+You can [follow the instructions for installing from a configuration file](https://learn.microsoft.com/en-us/visualstudio/install/import-export-installation-configurations?view=visualstudio#import-a-configuration-using-the-visual-studio-installer) and use the `.vsconfig` file located in the root of the repository.
+
 ### Git
 
 ```powershell
@@ -109,7 +111,6 @@ After the prerequisites above are installed, continue with [Shared Setup].
 - [Visual Studio 2022 Build Tools]
 - [.NET 9 install docs for Windows]
 - [winget]
-- [Windows CI build image]
 
 [Shared Setup]: ./shared.md
 [PR]: https://github.com/Nexus-Mods/Vortex/compare
@@ -118,4 +119,3 @@ After the prerequisites above are installed, continue with [Shared Setup].
 [Visual Studio 2022 Build Tools]: https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022
 [.NET 9 install docs for Windows]: https://learn.microsoft.com/en-gb/dotnet/core/install/windows?tabs=net9
 [winget]: https://learn.microsoft.com/windows/package-manager/winget/
-[Windows CI build image]: ../../docker/windows/Dockerfile

@@ -13,13 +13,12 @@ This is a list of all modules leaked by Vortex to extensions. Any module listed 
 | @floating-ui/react | 0.27.20 |
 | @headlessui/react | 2.2.10 |
 | @hot-updater/bsdiff | 0.30.6 |
-| @mdi/js | 7.4.47 |
 | @msgpack/msgpack | 2.8.0 |
-| @nexusmods/adaptor-api | link:../../packages/adaptor-api |
 | @nexusmods/file-dependency-resolver | link:../../packages/file-dependency-resolver |
-| @nexusmods/fomod-installer-ipc | 0.13.3 |
-| @nexusmods/fomod-installer-native | 0.13.3 |
+| @nexusmods/fomod-installer-ipc | 0.13.4 |
+| @nexusmods/fomod-installer-native | 0.13.4 |
 | @nexusmods/nexus-api | 1.7.3 |
+| @nexusmods/steam-kv-parser | link:../../packages/steam-kv-parser |
 | @nosferatu500/react-sortable-tree | 4.4.0 |
 | @nosferatu500/theme-file-explorer | 3.0.21 |
 | @opentelemetry/api | 1.9.1 |
@@ -30,6 +29,7 @@ This is a list of all modules leaked by Vortex to extensions. Any module listed 
 | @opentelemetry/sdk-trace-base | 2.8.0 |
 | @opentelemetry/semantic-conventions | 1.40.0 |
 | @tailwindcss/cli | 4.3.2 |
+| @tanstack/react-virtual | 3.13.23 |
 | @types/bluebird | 3.5.20 |
 | @types/uuid | 3.4.13 |
 | @vortex/nexus-api-v3 | link:../../packages/nexus-api-v3 |
@@ -43,8 +43,10 @@ This is a list of all modules leaked by Vortex to extensions. Any module listed 
 | content-disposition | 0.5.4 |
 | content-type | 1.0.5 |
 | crc-32 | 1.2.2 |
+| cytoscape | 3.33.1 |
+| cytoscape-cose-bilkent | 4.1.0 |
+| cytoscape-edgehandles | 3.6.0 |
 | d3 | 5.16.0 |
-| date-fns | 2.30.0 |
 | dayjs | 1.11.20 |
 | dequal | 2.0.3 |
 | dnd-core | 9.5.1 |
@@ -69,12 +71,14 @@ This is a list of all modules leaked by Vortex to extensions. Any module listed 
 | ini | 6.0.0 |
 | interweave | 12.9.0 |
 | is-admin | 3.0.0 |
+| js-yaml | 4.1.1 |
 | json-socket | 0.3.0 |
 | jsonwebtoken | 9.0.3 |
 | leveldown | 5.6.0 |
 | levelup | 4.4.0 |
 | limiter | 3.0.0 |
 | lodash | 4.17.23 |
+| markdown-ast | 0.2.1 |
 | memoize-one | 5.2.1 |
 | minimatch | 3.1.5 |
 | mixpanel-browser | 2.79.0 |
@@ -83,6 +87,7 @@ This is a list of all modules leaked by Vortex to extensions. Any module listed 
 | normalize-url | 6.1.0 |
 | numeral | 2.0.6 |
 | openapi-fetch | 0.17.0 |
+| p-limit | 7.3.0 |
 | p-queue | 9.3.0 |
 | packery | 2.1.2 |
 | permissions | 2.1.0 |
@@ -118,6 +123,7 @@ This is a list of all modules leaked by Vortex to extensions. Any module listed 
 | source-map-support | 0.5.21 |
 | string-template | 1.0.0 |
 | tailwindcss | 4.3.2 |
+| temporal-polyfill | 1.0.4 |
 | tmp | 0.1.0 |
 | tough-cookie | 6.0.1 |
 | turbowalk | 3.1.1 |

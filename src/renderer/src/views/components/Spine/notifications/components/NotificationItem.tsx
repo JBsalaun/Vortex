@@ -1,14 +1,8 @@
-import {
-  mdiAlertOctagon,
-  mdiAlertOutline,
-  mdiCheckCircleOutline,
-  mdiInformationOutline,
-  mdiLoading,
-} from "@mdi/js";
 import React, { useCallback } from "react";
 
 import type { INotification, NotificationType } from "@/types/INotification";
-import { Icon } from "@/ui/components/icon/Icon";
+import { Icon, type IIconSource } from "@/ui/components/icon/Icon";
+import { getIconProps } from "@/ui/components/icon/utils/icon_props/iconProps.util";
 import { joinClasses } from "@/ui/utils/joinClasses";
 
 import { useNotificationTranslation } from "../hooks/useNotificationTranslation.hook";
@@ -18,16 +12,18 @@ import { NotificationContent } from "./NotificationContent";
 import { NotificationControls } from "./NotificationControls";
 
 const STATUS_MAP = {
-  error: { className: "text-danger-strong", icon: mdiAlertOctagon },
-  warning: { className: "text-warning-strong", icon: mdiAlertOutline },
-  success: { className: "text-success-strong", icon: mdiCheckCircleOutline },
-  info: { className: "text-info-strong", icon: mdiInformationOutline },
-  activity: { className: "text-info-strong animate-spin", icon: mdiLoading },
-  global: { className: "text-info-strong", icon: mdiInformationOutline },
-  silent: { className: "text-info-strong", icon: mdiInformationOutline },
-} satisfies Record<NotificationType, { className: string; icon: string }>;
+  error: { className: "text-danger-strong", icon: "report" },
+  warning: { className: "text-warning-strong", icon: "warning" },
+  success: { className: "text-success-strong", icon: "check_circle" },
+  info: { className: "text-info-strong", icon: "info" },
+  activity: { className: "text-info-strong animate-spin", icon: "progress_activity" },
+  global: { className: "text-info-strong", icon: "info" },
+  silent: { className: "text-info-strong", icon: "info" },
+} satisfies Record<NotificationType, { className: string; icon: IIconSource }>;
 
-const getNotificationStatus = (type: NotificationType): { className: string; icon: string } => {
+const getNotificationStatus = (
+  type: NotificationType,
+): { className: string; icon: IIconSource } => {
   return STATUS_MAP[type];
 };
 
@@ -84,7 +80,7 @@ export const NotificationItem = ({
     <div className="flex gap-x-3 border-stroke-weak p-2 not-last:border-b">
       <Icon
         className={joinClasses(["relative mt-0.5 shrink-0", status.className])}
-        path={status.icon}
+        {...getIconProps(status.icon)}
         size="sm"
       />
 
@@ -94,7 +90,7 @@ export const NotificationItem = ({
         {type === "activity" && notification.progress !== undefined && (
           <div className="h-1 w-full overflow-hidden rounded-full bg-surface-high">
             <div
-              className="h-full rounded-full bg-info-strong transition-[width] duration-300"
+              className="h-full rounded-full bg-info-strong transition-[width] duration-300 reduce-motion:duration-0"
               style={{ width: `${notification.progress}%` }}
             />
           </div>

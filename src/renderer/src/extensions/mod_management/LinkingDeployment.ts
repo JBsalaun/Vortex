@@ -1,12 +1,12 @@
+import { lstat } from "node:fs/promises";
 import * as path from "path";
 
-import { getErrorCode, getErrorMessageOrDefault } from "@vortex/shared";
+import { getErrorCode, getErrorMessageOrDefault, VortexModStagingFolder } from "@vortex/shared";
 import type { TFunction } from "i18next";
 import * as _ from "lodash";
 import type { IEntry } from "turbowalk";
 import turbowalk from "turbowalk";
 
-import { addNotification } from "../../actions/notifications";
 import { log } from "../../logging";
 import type { IExtensionApi } from "../../types/IExtensionContext";
 import type { DirectoryCleaningMode, IGame } from "../../types/IGame";
@@ -16,6 +16,8 @@ import * as fs from "../../util/fs";
 import type { Normalize } from "../../util/getNormalizeFunc";
 import { activeGameId } from "../../util/selectors";
 import { truthy } from "../../util/util";
+import type { IDeploymentFailure } from "./actions/session";
+import { addDeploymentFailures } from "./actions/session";
 import type {
   IDeployedFile,
   IDeploymentMethod,
@@ -23,6 +25,7 @@ import type {
   IUnavailableReason,
 } from "./types/IDeploymentMethod";
 import type BlacklistSet from "./util/BlacklistSet";
+import { deployedFileKey, deployedFilePath } from "./util/deployedFilePath";
 
 export interface IDeployment {
   [relPath: string]: IDeployedFile;
@@ -31,6 +34,31 @@ export interface IDeployment {
 // TODO: guess I need to pull this out of the linking activator as the deployment
 //   code needs to know about these files when merging archives
 export const BACKUP_TAG = ".vortex_backup";
+
+async function isAbsent(filePath: string): Promise<boolean> {
+  try {
+    await lstat(filePath);
+    return false;
+  } catch (err: unknown) {
+    if (getErrorCode(err) === "ENOENT") {
+      return true;
+    }
+    throw err;
+  }
+}
+
+/** Moves a file aside for a link, refusing when an earlier backup already holds the name. */
+async function backUpGameFile(filePath: string): Promise<void> {
+  const backupPath = filePath + BACKUP_TAG;
+  if (await isAbsent(filePath)) {
+    return;
+  }
+  if (!(await isAbsent(backupPath))) {
+    throw new Error(`"${backupPath}" already exists`);
+  }
+  // the util/fs rename keeps the busy-retry and elevated-unlock handling a locked game file needs
+  await fs.renameAsync(filePath, backupPath);
+}
 
 interface IDeploymentContext {
   previousDeployment: IDeployment;
@@ -170,8 +198,6 @@ abstract class LinkingActivator implements IDeploymentMethod {
     let sourceChanged: string[];
     let contentChanged: string[];
 
-    let errorCount: number = 0;
-
     this.mDirCache = new Set<string>();
 
     // unlink all files that were removed or changed
@@ -201,51 +227,51 @@ abstract class LinkingActivator implements IDeploymentMethod {
     const directoryCleaning = game.directoryCleaning || "tag";
     const dirTags = directoryCleaning === "tag";
 
+    const failures: IDeploymentFailure[] = [];
+    const recordFailure = (file: IDeployedFile | undefined) => {
+      if (file === undefined) return;
+      failures.push({
+        source: file.source,
+        relPath: file.relPath,
+        outputPath: path.join(dataPath, file.target || "", file.relPath),
+      });
+    };
+
+    const onRemoveError = (file: IDeployedFile | undefined, err: unknown) => {
+      log("warn", "failed to remove deployed file", {
+        link: file?.relPath,
+        error: getErrorMessageOrDefault(err),
+      });
+      recordFailure(file);
+    };
+
     return (
       mapWithConcurrency(
         removed,
         (key) =>
           this.removeDeployedFile(installationPath, dataPath, key, true).catch((err: unknown) => {
+            // these keys are no longer in newDeployment
+            const file = context.previousDeployment[key];
             log("warn", "failed to remove deployed file", {
-              link: context.newDeployment[key].relPath,
+              link: file?.relPath,
               error: getErrorMessageOrDefault(err),
             });
-            ++errorCount;
+            recordFailure(file);
           }),
         50,
       )
         .then(() =>
-          mapWithConcurrency(
-            sourceChanged,
-            (key: string, idx: number) =>
-              this.removeDeployedFile(installationPath, dataPath, key, false).catch(
-                (err: unknown) => {
-                  log("warn", "failed to remove deployed file", {
-                    link: context.newDeployment[key].relPath,
-                    error: getErrorMessageOrDefault(err),
-                  });
-                  ++errorCount;
-                  sourceChanged.splice(idx, 1);
-                },
-              ),
-            50,
+          this.unlinkChanged(sourceChanged, installationPath, dataPath, onRemoveError).then(
+            (keys) => {
+              sourceChanged = keys;
+            },
           ),
         )
         .then(() =>
-          mapWithConcurrency(
-            contentChanged,
-            (key: string, idx: number) =>
-              this.removeDeployedFile(installationPath, dataPath, key, false).catch(
-                (err: unknown) => {
-                  log("warn", "failed to remove deployed file", {
-                    link: context.newDeployment[key].relPath,
-                    error: getErrorMessageOrDefault(err),
-                  });
-                  ++errorCount;
-                  contentChanged.splice(idx, 1);
-                },
-              ),
-            50,
+          this.unlinkChanged(contentChanged, installationPath, dataPath, onRemoveError).then(
+            (keys) => {
+              contentChanged = keys;
+            },
           ),
         )
         // then, (re-)link all files that were added
@@ -263,7 +289,7 @@ abstract class LinkingActivator implements IDeploymentMethod {
                   if (getErrorCode(err) !== "ENOENT") {
                     // if the source file doesn't exist it must have been deleted
                     // in the mean time. That's not really our problem.
-                    ++errorCount;
+                    recordFailure(context.newDeployment[key]);
                   }
                 })
                 .then(() => progress()),
@@ -283,7 +309,7 @@ abstract class LinkingActivator implements IDeploymentMethod {
                     error: getErrorMessageOrDefault(err),
                   });
                   if (getErrorCode(err) !== "ENOENT") {
-                    ++errorCount;
+                    recordFailure(context.newDeployment[key]);
                   }
                 })
                 .then(() => progress()),
@@ -291,28 +317,16 @@ abstract class LinkingActivator implements IDeploymentMethod {
           ),
         )
         .then(() => {
-          if (errorCount > 0) {
-            this.mApi.store.dispatch(
-              addNotification({
-                type: "error",
-                title: this.mApi.translate("Deployment failed"),
-                message: this.mApi.translate(
-                  "{{count}} files were not correctly deployed (see log for details).\n" +
-                    "The most likely reason is that files were locked by external applications " +
-                    "so please ensure no other application has a mod file open, then repeat " +
-                    "deployment.",
-                  { replace: { count: errorCount } },
-                ),
-              }),
-            );
+          if (failures.length > 0) {
+            this.mApi.store.dispatch(addDeploymentFailures(gameId, failures));
           }
 
-          const state: IState = this.mApi.store.getState();
+          const state: IState = this.mApi.getState();
           const { cleanupOnDeploy } = state.settings.mods;
           const gameRequiresCleanup =
             game.requiresCleanup === undefined ? game.mergeMods !== true : game.requiresCleanup;
           if (removed.length > 0 && (gameRequiresCleanup || cleanupOnDeploy)) {
-            this.postLinkPurge(dataPath, false, false, directoryCleaning).catch((err) => {
+            return this.postLinkPurge(dataPath, false, false, directoryCleaning).catch((err) => {
               if (err instanceof UserCanceled) {
                 return null;
               }
@@ -321,7 +335,8 @@ abstract class LinkingActivator implements IDeploymentMethod {
               });
             });
           }
-
+        })
+        .then(() => {
           this.mContext = undefined;
           context.onComplete();
           return Object.keys(context.previousDeployment).map(
@@ -494,11 +509,7 @@ abstract class LinkingActivator implements IDeploymentMethod {
     return mapWithConcurrency(
       activation ?? [],
       (fileEntry) => {
-        const fileDataPath = (
-          truthy(fileEntry.target)
-            ? [dataPath, fileEntry.target, fileEntry.relPath]
-            : [dataPath, fileEntry.relPath]
-        ).join(path.sep);
+        const fileDataPath = deployedFilePath(dataPath, fileEntry.target, fileEntry.relPath);
         const fileModPath = [installPath, fileEntry.source, fileEntry.relPath].join(path.sep);
         let sourceDeleted: boolean = false;
         let destDeleted: boolean = false;
@@ -559,18 +570,21 @@ abstract class LinkingActivator implements IDeploymentMethod {
               changes.push({
                 filePath: fileEntry.relPath,
                 source: fileEntry.source,
+                target: fileEntry.target,
                 changeType: "srcdeleted",
               });
             } else if (destDeleted && !sourceDeleted) {
               changes.push({
                 filePath: fileEntry.relPath,
                 source: fileEntry.source,
+                target: fileEntry.target,
                 changeType: "deleted",
               });
             } else if (!sourceDeleted && !destDeleted && !isLink) {
               changes.push({
                 filePath: fileEntry.relPath,
                 source: fileEntry.source,
+                target: fileEntry.target,
                 sourceTime,
                 destTime,
                 changeType: "refchange",
@@ -682,7 +696,8 @@ abstract class LinkingActivator implements IDeploymentMethod {
     // that the same file may show up with different change types. This can cause an error
     // since the same action can not be applied
 
-    const changeMap: { [filePath: string]: IFileChange } = {};
+    // keyed by deployedFileKey
+    const changeMap: { [fileKey: string]: IFileChange } = {};
 
     // if one of the files is deleted that's the more important change, otherwise we
     // take the later one, assuming there is a chronological order to the changes
@@ -691,15 +706,41 @@ abstract class LinkingActivator implements IDeploymentMethod {
     };
 
     for (const change of input) {
-      if (
-        changeMap[change.filePath] === undefined ||
-        moreImportant(change, changeMap[change.filePath])
-      ) {
-        changeMap[change.filePath] = change;
+      const key = deployedFileKey(VortexModStagingFolder(change.source), change.filePath);
+      if (changeMap[key] === undefined || moreImportant(change, changeMap[key])) {
+        changeMap[key] = change;
       }
     }
 
     return Object.values(changeMap);
+  }
+
+  /**
+   * Unlinks each key through {@link removeDeployedFile}, so every deployment method's own
+   * unlinkFile runs. Keys whose unlink failed are dropped: their link is still in place, so
+   * re-linking them would deploy over it. Returns the keys to re-link.
+   */
+  private async unlinkChanged(
+    keys: string[],
+    installationPath: string,
+    dataPath: string,
+    onError: (file: IDeployedFile | undefined, err: unknown) => void,
+  ): Promise<string[]> {
+    const failed = new Set<string>();
+    await mapWithConcurrency(
+      keys,
+      (key: string) => {
+        const file = this.mContext.newDeployment[key];
+        return this.removeDeployedFile(installationPath, dataPath, key, false).catch(
+          (err: unknown) => {
+            onError(file, err);
+            failed.add(key);
+          },
+        );
+      },
+      50,
+    );
+    return keys.filter((key) => !failed.has(key));
   }
 
   private removeDeployedFile(
@@ -780,7 +821,7 @@ abstract class LinkingActivator implements IDeploymentMethod {
           .then((link) =>
             link
               ? Promise.resolve(undefined) // don't re-create link that's already correct
-              : fs.renameAsync(fullOutputPath, fullOutputPath + BACKUP_TAG),
+              : backUpGameFile(fullOutputPath),
           )
           .catch((err: unknown) =>
             getErrorCode(err) === "ENOENT"

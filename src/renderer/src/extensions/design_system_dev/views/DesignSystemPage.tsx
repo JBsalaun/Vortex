@@ -6,23 +6,30 @@
 
 import React, { useState } from "react";
 
-import type { IExtensionApi } from "@/types/IExtensionContext";
 import { AlertDemo } from "@/ui/components/alert/Alert.demo";
+import { BadgesDemo } from "@/ui/components/badges/Badges.demo";
 import { BulletDemo } from "@/ui/components/bullet/Bullet.demo";
 import { ButtonDemo } from "@/ui/components/button/Button.demo";
-import { CollectionTileDemo } from "@/ui/components/collection_tile/CollectionTile.demo";
+import { ContextMenuDemo } from "@/ui/components/context_menu/ContextMenu.demo";
 import { DropdownDemo } from "@/ui/components/dropdown/Dropdown.demo";
-import { InputDemo } from "@/ui/components/form/input/Input.demo";
-import { SelectDemo } from "@/ui/components/form/select/Select.demo";
-import { SwitchDemo } from "@/ui/components/form/switch/Switch.demo";
+import { FileTreeDemo } from "@/ui/components/file_tree/FileTree.demo";
+import { CheckboxFieldDemo } from "@/ui/components/form/checkbox_field/CheckboxField.demo";
+import { RadioGroupFieldDemo } from "@/ui/components/form/radio_group_field/RadioGroupField.demo";
+import { SelectFieldDemo } from "@/ui/components/form/select_field/SelectField.demo";
+import { SwitchFieldDemo } from "@/ui/components/form/switch_field/SwitchField.demo";
+import { TextAreaFieldDemo } from "@/ui/components/form/text_area_field/TextAreaField.demo";
+import { TextFieldDemo } from "@/ui/components/form/text_field/TextField.demo";
+import { GameTileDemo } from "@/ui/components/game_tile/GameTile.demo";
+import { HoverCardDemo } from "@/ui/components/hover_card/HoverCard.demo";
 import { IconDemo } from "@/ui/components/icon/Icon.demo";
 import { ImageDemo } from "@/ui/components/image/Image.demo";
 import { ListingDemo } from "@/ui/components/listing/Listing.demo";
+import { MessageBoxDemo } from "@/ui/components/message_box/MessageBox.demo";
 import { PaginationDemo } from "@/ui/components/pagination/Pagination.demo";
 import { PickerDemo } from "@/ui/components/picker/Picker.demo";
 import { PillDemo } from "@/ui/components/pill/Pill.demo";
 import { PopoverDemo } from "@/ui/components/popover/Popover.demo";
-import { PremiumBadgeDemo } from "@/ui/components/premium_badge/PremiumBadge.demo";
+import { SplitButtonDemo } from "@/ui/components/split_button/SplitButton.demo";
 import { TableDemo } from "@/ui/components/table/Table.demo";
 import { TabBar } from "@/ui/components/tabs/TabBar";
 import { TabButton } from "@/ui/components/tabs/TabButton";
@@ -33,16 +40,24 @@ import { ToolbarDemo } from "@/ui/components/toolbar/Toolbar.demo";
 import { TooltipDemo } from "@/ui/components/tooltip/Tooltip.demo";
 import { TypographyDemo } from "@/ui/components/typography/Typography.demo";
 import { TypographyLinkDemo } from "@/ui/components/typography/TypographyLink.demo";
+import { ViewPickerDemo } from "@/ui/components/view_picker/ViewPicker.demo";
 import { Page } from "@/views/components/Page/Page";
 import { PageHeader } from "@/views/components/Page/PageHeader";
 import { PageScroll } from "@/views/components/Page/PageScroll";
 
-export const DesignSystemPage = ({ active, api }: { active?: boolean; api: IExtensionApi }) => {
+interface IDesignSystemPageProps {
+  /** Whether the page is the one showing, which its `Page` needs. */
+  active?: boolean;
+}
+
+export const DesignSystemPage = ({ active }: IDesignSystemPageProps) => {
   const [selectedTab, setSelectedTab] = useState("button");
+  const [selectedButtonTab, setSelectedButtonTab] = useState("buttons");
   const [selectedTypographyTab, setSelectedTypographyTab] = useState("typography");
   const [selectedIconTab, setSelectedIconTab] = useState("icon");
-  const [selectedFormTab, setSelectedFormTab] = useState("input");
+  const [selectedFormTab, setSelectedFormTab] = useState("text-field");
   const [selectedDropdownTab, setSelectedDropdownTab] = useState("dropdown");
+  const [selectedTooltipTab, setSelectedTooltipTab] = useState("tooltip-basic");
 
   return (
     <Page active={active} id="page-design-system-dev" scrollable={false}>
@@ -54,6 +69,7 @@ export const DesignSystemPage = ({ active, api }: { active?: boolean; api: IExte
 
       <PageScroll className="space-y-6 p-6">
         <TabProvider
+          hasBorder
           tab={selectedTab}
           tabListId="design-system-demo-tabs"
           onSetSelectedTab={setSelectedTab}
@@ -75,24 +91,54 @@ export const DesignSystemPage = ({ active, api }: { active?: boolean; api: IExte
 
             <TabButton name="Dropdown" panelId="dropdown" />
 
+            <TabButton name="File tree" panelId="file-tree" />
+
             <TabButton name="Listing" panelId="listing" />
 
             <TabButton name="Pagination" panelId="pagination" />
 
             <TabButton name="Table" panelId="table" />
 
-            <TabButton name="Collection Tile" panelId="collection-tile" />
+            <TabButton name="Tile" panelId="tile" />
 
             <TabButton name="Toolbar" panelId="toolbar" />
 
             <TabButton name="Tooltip" panelId="tooltip" />
 
             <TabButton name="Alert" panelId="alert" />
+            <TabButton name="Message box" panelId="message-box" />
           </TabBar>
 
           <div className="mt-6">
             <TabPanel id="button">
-              <ButtonDemo />
+              <TabProvider
+                tab={selectedButtonTab}
+                tabListId="button-demo-tabs"
+                tabType="secondary"
+                onSetSelectedTab={setSelectedButtonTab}
+              >
+                <TabBar>
+                  <TabButton name="Button" panelId="buttons" />
+
+                  <TabButton name="Split button" panelId="split-button" />
+
+                  <TabButton name="View picker" panelId="view-picker" />
+                </TabBar>
+
+                <div className="mt-6">
+                  <TabPanel id="buttons">
+                    <ButtonDemo />
+                  </TabPanel>
+
+                  <TabPanel id="split-button">
+                    <SplitButtonDemo />
+                  </TabPanel>
+
+                  <TabPanel id="view-picker">
+                    <ViewPickerDemo />
+                  </TabPanel>
+                </div>
+              </TabProvider>
             </TabPanel>
 
             <TabPanel id="pill">
@@ -132,24 +178,42 @@ export const DesignSystemPage = ({ active, api }: { active?: boolean; api: IExte
                 onSetSelectedTab={setSelectedFormTab}
               >
                 <TabBar>
-                  <TabButton name="Input" panelId="input" />
+                  <TabButton name="Text field" panelId="text-field" />
 
-                  <TabButton name="Select" panelId="select" />
+                  <TabButton name="Select field" panelId="select-field" />
 
-                  <TabButton name="Switch" panelId="switch" />
+                  <TabButton name="Checkbox field" panelId="checkbox-field" />
+
+                  <TabButton name="Switch field" panelId="switch-field" />
+
+                  <TabButton name="Radio group field" panelId="radio-group-field" />
+
+                  <TabButton name="Text area field" panelId="text-area-field" />
                 </TabBar>
 
                 <div className="mt-6">
-                  <TabPanel id="input">
-                    <InputDemo />
+                  <TabPanel id="text-field">
+                    <TextFieldDemo />
                   </TabPanel>
 
-                  <TabPanel id="select">
-                    <SelectDemo />
+                  <TabPanel id="select-field">
+                    <SelectFieldDemo />
                   </TabPanel>
 
-                  <TabPanel id="switch">
-                    <SwitchDemo />
+                  <TabPanel id="checkbox-field">
+                    <CheckboxFieldDemo />
+                  </TabPanel>
+
+                  <TabPanel id="switch-field">
+                    <SwitchFieldDemo />
+                  </TabPanel>
+
+                  <TabPanel id="radio-group-field">
+                    <RadioGroupFieldDemo />
+                  </TabPanel>
+
+                  <TabPanel id="text-area-field">
+                    <TextAreaFieldDemo />
                   </TabPanel>
                 </div>
               </TabProvider>
@@ -169,7 +233,7 @@ export const DesignSystemPage = ({ active, api }: { active?: boolean; api: IExte
                 <TabBar>
                   <TabButton name="Icon" panelId="icon" />
 
-                  <TabButton name="Premium Badge" panelId="premium-badge" />
+                  <TabButton name="Badges" panelId="badges" />
 
                   <TabButton name="Bullet" panelId="bullet" />
                 </TabBar>
@@ -179,8 +243,8 @@ export const DesignSystemPage = ({ active, api }: { active?: boolean; api: IExte
                     <IconDemo />
                   </TabPanel>
 
-                  <TabPanel id="premium-badge">
-                    <PremiumBadgeDemo />
+                  <TabPanel id="badges">
+                    <BadgesDemo />
                   </TabPanel>
 
                   <TabPanel id="bullet">
@@ -207,6 +271,8 @@ export const DesignSystemPage = ({ active, api }: { active?: boolean; api: IExte
                   <TabButton name="Picker" panelId="picker" />
 
                   <TabButton name="Popover" panelId="popover" />
+
+                  <TabButton name="Context menu" panelId="context-menu" />
                 </TabBar>
 
                 <div className="mt-6">
@@ -221,12 +287,20 @@ export const DesignSystemPage = ({ active, api }: { active?: boolean; api: IExte
                   <TabPanel id="popover">
                     <PopoverDemo />
                   </TabPanel>
+
+                  <TabPanel id="context-menu">
+                    <ContextMenuDemo />
+                  </TabPanel>
                 </div>
               </TabProvider>
             </TabPanel>
 
             <TabPanel id="listing">
               <ListingDemo />
+            </TabPanel>
+
+            <TabPanel id="file-tree">
+              <FileTreeDemo />
             </TabPanel>
 
             <TabPanel id="pagination">
@@ -237,8 +311,8 @@ export const DesignSystemPage = ({ active, api }: { active?: boolean; api: IExte
               <TableDemo />
             </TabPanel>
 
-            <TabPanel id="collection-tile">
-              <CollectionTileDemo api={api} />
+            <TabPanel id="tile">
+              <GameTileDemo />
             </TabPanel>
 
             <TabPanel id="toolbar">
@@ -246,11 +320,36 @@ export const DesignSystemPage = ({ active, api }: { active?: boolean; api: IExte
             </TabPanel>
 
             <TabPanel id="tooltip">
-              <TooltipDemo />
+              <TabProvider
+                tab={selectedTooltipTab}
+                tabListId="tooltip-demo-tabs"
+                tabType="secondary"
+                onSetSelectedTab={setSelectedTooltipTab}
+              >
+                <TabBar>
+                  <TabButton name="Tooltip" panelId="tooltip-basic" />
+
+                  <TabButton name="Hover card" panelId="hover-card" />
+                </TabBar>
+
+                <div className="mt-6">
+                  <TabPanel id="tooltip-basic">
+                    <TooltipDemo />
+                  </TabPanel>
+
+                  <TabPanel id="hover-card">
+                    <HoverCardDemo />
+                  </TabPanel>
+                </div>
+              </TabProvider>
             </TabPanel>
 
             <TabPanel id="alert">
               <AlertDemo />
+            </TabPanel>
+
+            <TabPanel id="message-box">
+              <MessageBoxDemo />
             </TabPanel>
           </div>
         </TabProvider>

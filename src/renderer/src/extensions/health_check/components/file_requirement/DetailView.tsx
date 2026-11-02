@@ -8,9 +8,9 @@ import {
 } from "@/extensions/health_check/utils/fileRequirements/fileRequirementActions";
 import type { IFileRequirementReport } from "@/extensions/health_check/utils/fileRequirements/fileRequirementReport";
 import { severityStyleMap } from "@/extensions/health_check/utils/shared/severityStyles";
-import { decodeUID } from "@/extensions/nexus_integration/util/UIDs";
 import type { IState } from "@/types/IState";
 import { Icon } from "@/ui/components/icon/Icon";
+import { getIconProps } from "@/ui/components/icon/utils/icon_props/iconProps.util";
 import { Typography } from "@/ui/components/typography/Typography";
 import { TypographyLink } from "@/ui/components/typography/TypographyLink";
 import { joinClasses } from "@/ui/utils/joinClasses";
@@ -53,7 +53,6 @@ export const DetailView = ({ entry, api, onBack }: IDetailViewProps) => {
       issue_type: issueType,
       resolution_type: resolutionType,
       required_mod_count: report.requirements.length,
-      source_mod_name: report.sourceModName,
     });
     // eslint-disable-next-line @eslint-react/exhaustive-deps
   }, []);
@@ -89,8 +88,8 @@ export const DetailView = ({ entry, api, onBack }: IDetailViewProps) => {
       <div className="flex items-center justify-between gap-x-4 border-b border-stroke-weak p-3">
         <div className="flex min-w-0 items-center gap-x-2">
           <Icon
+            {...getIconProps(severityStyle.icon)}
             className={joinClasses(["shrink-0", severityStyle.textClassName])}
-            path={severityStyle.iconPath}
           />
 
           <Typography as="div" className="font-semibold">
@@ -144,8 +143,7 @@ export const DetailView = ({ entry, api, onBack }: IDetailViewProps) => {
                 downloadFileRequirement(api, candidate, identity, enabledFile),
               onInstall: (candidate, resolution) =>
                 trackOneClickInstallClicked({
-                  mod_id: decodeUID(candidate.modUID)?.id ?? 0,
-                  mod_name: candidate.modName,
+                  mod_uid: candidate.modUID,
                   mod_version: candidate.version,
                   is_adult_content: candidate.adultContent,
                   requirement_state: resolution.requirementState,
@@ -158,8 +156,7 @@ export const DetailView = ({ entry, api, onBack }: IDetailViewProps) => {
                 }),
               onOpenModPage: (candidate, resolution) => {
                 const modPageProps = {
-                  mod_id: decodeUID(candidate.modUID)?.id ?? 0,
-                  mod_name: candidate.modName,
+                  mod_uid: candidate.modUID,
                   mod_version: candidate.version,
                 };
 
@@ -184,27 +181,25 @@ export const DetailView = ({ entry, api, onBack }: IDetailViewProps) => {
                 if (enabledFile) {
                   trackEnableThisVersionClicked({
                     ...resolutionProps,
-                    mod_id: decodeUID(correctFile.modUID)?.id ?? 0,
+                    mod_uid: correctFile.modUID,
                     required_version: correctFile.version,
                     current_version: enabledFile.version,
                   });
                 } else {
                   trackEnableClicked({
                     ...resolutionProps,
-                    mod_id: decodeUID(correctFile.modUID)?.id ?? 0,
-                    mod_name: correctFile.modName,
+                    mod_uid: correctFile.modUID,
                     mod_version: correctFile.version,
                   });
                 }
               },
               onViewInMods: (file) =>
                 trackViewInModsClicked({
-                  mod_id: decodeUID(file.modUID)?.id ?? 0,
-                  mod_name: file.modName,
+                  mod_uid: file.modUID,
                 }),
               onInstallDownloaded: (file, resolution) =>
                 trackInstallDownloadedClicked({
-                  mod_id: decodeUID(file.modUID)?.id ?? 0,
+                  mod_uid: file.modUID,
                   requirement_state: resolution.requirementState,
                   option_count: resolution.optionCount,
                 }),

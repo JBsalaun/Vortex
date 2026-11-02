@@ -1,4 +1,3 @@
-import { mdiCheck, mdiDiamondStone, mdiOpenInNew } from "@mdi/js";
 import React, { type ReactNode, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { useSelector } from "react-redux";
@@ -23,7 +22,7 @@ export type PremiumTrigger = "single_install" | "batch_install" | "install_all";
 
 const ListItem = ({ children }: { children: ReactNode }) => (
   <li className="flex gap-x-1">
-    <Icon className="mt-0.5 shrink-0 text-premium-strong" path={mdiCheck} size="xs" />
+    <Icon className="mt-0.5 shrink-0 text-premium-strong" name="check" size="xs" />
 
     {children}
   </li>
@@ -34,7 +33,7 @@ export const PremiumModal = ({
   isOpen,
   downloadScope = "single",
   modCount,
-  modId,
+  modUID,
   trigger,
   onClose,
   onDownload,
@@ -44,7 +43,7 @@ export const PremiumModal = ({
   isOpen: boolean;
   downloadScope?: "single" | "all";
   modCount?: number;
-  modId?: number;
+  modUID?: string;
   /** Which 1-click flow surfaced the upsell, for the analytics funnel. */
   trigger: PremiumTrigger;
   onClose: () => void;
@@ -68,9 +67,14 @@ export const PremiumModal = ({
 
   useEffect(() => {
     if (isOpen) {
-      trackPremiumModalShown({ ...identity, trigger, mod_id: modId, mod_count: modCount });
+      trackPremiumModalShown({
+        ...identity,
+        trigger,
+        mod_uid: modUID,
+        mod_count: modCount,
+      });
     }
-  }, [isOpen, trigger, identity, modId, modCount, trackPremiumModalShown]);
+  }, [isOpen, trigger, identity, modUID, modCount, trackPremiumModalShown]);
 
   // The purchase happens on the website, so watch for it while the upsell is up. This is
   // also why "Unlock premium" doesn't close the modal: staying open is what keeps the
@@ -129,7 +133,7 @@ export const PremiumModal = ({
           appearance="moderate"
           brand="neutral"
           className="w-full"
-          leftIconPath={downloadScope === "single" && mdiOpenInNew}
+          leftIcon={downloadScope === "single" ? "open_in_new" : undefined}
           onClick={() => {
             trackPremiumModalFallbackClicked({
               ...identity,
@@ -147,7 +151,7 @@ export const PremiumModal = ({
         <Button
           brand="premium"
           className="w-full"
-          leftIconPath={mdiDiamondStone}
+          leftIcon="diamond"
           onClick={() => {
             trackPremiumModalUnlockClicked({
               ...identity,

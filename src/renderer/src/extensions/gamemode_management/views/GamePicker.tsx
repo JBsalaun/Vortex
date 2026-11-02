@@ -1,21 +1,19 @@
 import type { IGameListEntry } from "@nexusmods/nexus-api";
-import type PromiseBB from "bluebird";
+import { GameDomain } from "@vortex/shared";
 import { ratio } from "fuzzball";
 import memoizeOne from "memoize-one";
-import React, { type ComponentClass, useCallback, useMemo, useRef, useState } from "react";
+import React, { type ComponentClass, useMemo, useRef, useState } from "react";
 import type { WithTranslation } from "react-i18next";
+import { useSelector } from "react-redux";
 
+import { useFlag } from "@/contexts/FlagsContext";
 import type { IAvailableExtension } from "@/types/extensions";
 import type { IExtensionState } from "@/types/IState";
 import type { IState } from "@/types/IState";
-import { Listing } from "@/ui/components/listing/Listing";
-import { Pagination } from "@/ui/components/pagination/Pagination";
-import { Picker } from "@/ui/components/picker/Picker";
 import { Toolbar } from "@/ui/components/toolbar/Toolbar";
 import type { IToolbarAction } from "@/ui/components/toolbar/ToolbarGroup";
 import { ToolbarGroup } from "@/ui/components/toolbar/ToolbarGroup";
 import { isContributed } from "@/util/isContributed";
-import { getSafe } from "@/util/storeHelper";
 import { Page } from "@/views/components/Page/Page";
 import { PageHeader } from "@/views/components/Page/PageHeader";
 import { PageScroll } from "@/views/components/Page/PageScroll";
@@ -26,17 +24,23 @@ import { nexusGameId } from "../../nexus_integration/util/convertGameId";
 import type { IProfile } from "../../profile_management/types/IProfile";
 import { setShowHiddenGames } from "../actions/session";
 import { setPickerLayout, setSortManaged, setSortUnmanaged } from "../actions/settings";
-import { CollapsibleSection } from "../components/CollapsibleSection";
-import { GamesGrid } from "../components/GamesGrid";
-import { GamesList } from "../components/GamesList";
-import { NoGamesFound } from "../components/NoGamesFound";
+import { AddedGames } from "../components/added_games/AddedGames";
+import { DetectedGames } from "../components/detected_games/DetectedGames";
 import { Search } from "../components/search/Search";
+import { Section } from "../components/section/Section";
+import { SupportedGames } from "../components/supported_games/SupportedGames";
 import {
   DEFAULT_PICKER_LAYOUT,
   useDisplayOptionsAction,
 } from "../hooks/useDisplayOptionsAction.hook";
+import { catalogExtensionGameIds } from "../selectors";
+import type { IDetectedGame } from "../types/IDetectedGame";
 import type { IDiscoveryResult } from "../types/IDiscoveryResult";
 import type { IGameStored } from "../types/IGameStored";
+import { detectedInternalId } from "../util/detected_games/detectedInternalId";
+import { detectedStore } from "../util/detected_games/detectedStore";
+import { isListableDetectedGame } from "../util/detected_games/listableDetectedIds";
+import { locallyDetectedGames } from "../util/detected_games/locallyDetectedGames";
 
 const gameFromDiscovery = (id: string, discovered: IDiscoveryResult): IGameStored => ({
   id,
@@ -55,8 +59,8 @@ interface IBaseProps {
   active?: boolean;
   pageId?: string;
   secondary?: boolean;
-  onRefreshGameInfo: (gameId: string) => PromiseBB<void>;
-  onBrowseGameLocation: (gameId: string) => PromiseBB<void>;
+  onRefreshGameInfo: (gameId: string) => PromiseLike<void>;
+  onBrowseGameLocation: (gameId: string) => PromiseLike<void>;
   nexusGames: IGameListEntry[];
 }
 
@@ -71,6 +75,8 @@ interface IConnectedProps {
   sortManaged: string;
   sortUnmanaged: string;
   showHidden: boolean;
+  detectedGames: IDetectedGame[];
+  favouriteGames: number[];
 }
 
 interface IActionProps {
@@ -85,9 +91,6 @@ type IProps = IBaseProps & IConnectedProps & IActionProps & WithTranslation;
 // "PAYDAY 2" vs "Payday 2" or "Resident Evil: Village" vs "Resident Evil Village" are 100 similar
 // "Final Fantasy 7 Remake" vs "Final Fantasy VII Remake" are 91 similar
 const SIMILARITY_RATIO = 90;
-// The unmanaged list can be large, so it's paginated this many games per page.
-const UNMANAGED_PAGE_SIZE = 49;
-
 /**
  * picker/configuration for game modes
  */
@@ -105,6 +108,8 @@ const GamePicker = ({
   sortUnmanaged,
   showHidden,
   gameMode,
+  detectedGames,
+  favouriteGames,
   nexusGames,
   onRefreshGameInfo,
   onBrowseGameLocation,
@@ -114,11 +119,19 @@ const GamePicker = ({
   onSetShowHidden,
 }: IProps) => {
   const [currentFilterValue, setCurrentFilterValue] = useState("");
-  const [unmanagedPage, setUnmanagedPage] = useState(1);
+
+  // a game the endpoint gave no extension for is only listable when no extension in
+  // the catalog provides one, else the supported section keeps its download flow
+  const tierZeroAllowed = useFlag("vortex-tier-0-game-support") !== undefined;
+  const extensionGameIds = useSelector(catalogExtensionGameIds);
+  const detectedListOptions = useMemo(
+    () => ({ allowTierZero: tierZeroAllowed, extensionGameIds }),
+    [tierZeroAllowed, extensionGameIds],
+  );
 
   const nameLookupRef = useRef<{ [name: string]: string }>({});
   const scrollAreaRef = useRef<HTMLDivElement>(null);
-  const unmanagedSectionRef = useRef<HTMLDivElement>(null);
+  const supportedSectionRef = useRef<HTMLDivElement>(null);
 
   const nexusGameById = useMemo(
     () =>
@@ -138,6 +151,18 @@ const GamePicker = ({
           prev[entry.name] = entry;
           return prev;
         }, {}),
+      ),
+    [],
+  );
+
+  // the detected-games response identifies games by the numeric Nexus id
+  const nexusGameByNexusId = useMemo(
+    () =>
+      memoizeOne((gameList: IGameListEntry[]) =>
+        gameList.reduce<Map<number, IGameListEntry>>((prev, entry) => {
+          prev.set(entry.id, entry);
+          return prev;
+        }, new Map<number, IGameListEntry>()),
       ),
     [],
   );
@@ -230,15 +255,13 @@ const GamePicker = ({
   );
 
   const managedGameList: IGameStored[] = [];
-  const discoveredGameList: IGameStored[] = [];
   const supportedGameList: IGameStored[] = [];
 
   displayedGames.forEach((game: IGameStored) => {
-    if (getSafe(discoveredGames, [game.id, "path"], undefined) !== undefined) {
+    if (discoveredGames[game.id]?.path !== undefined) {
+      // games the user hasn't added go to the detected section, further down
       if (profileGames.has(game.id)) {
         managedGameList.push(game);
-      } else {
-        discoveredGameList.push(game);
       }
     } else {
       supportedGameList.push(game);
@@ -266,25 +289,85 @@ const GamePicker = ({
       }
       if (profileGames.has(gameId)) {
         managedGameList.push(gameFromDiscovery(gameId, discoveredGames[gameId]));
-      } else {
-        discoveredGameList.push(gameFromDiscovery(gameId, discoveredGames[gameId]));
       }
     }
   });
 
-  const unmanagedGameList: IGameStored[] = [...discoveredGameList, ...supportedGameList];
+  // The detected section is fed by the detected-games response, which names the user's
+  // store-installed games, and then by discovery. A response game is listable when the
+  // endpoint returned an extension for it, or when Vortex already knows it because an
+  // extension is installed (the endpoint returns no extension for the ones bundled with
+  // Vortex). The nexus games list supplies the name plus the internal id the store's
+  // actions know.
+  const nexusGameByNexusIdMap = nexusGameByNexusId(nexusGames);
+  const favourites = new Set(favouriteGames);
+  const favouriteGameIds: string[] = [];
+  const detectedStores: Record<string, string> = {};
+  const listedIds = new Set<string>();
+  const detectedGameList: IGameStored[] = detectedGames
+    .map<IGameStored | undefined>((game) => {
+      const nexusGame = nexusGameByNexusIdMap.get(game.gameId);
+      if (nexusGame === undefined) {
+        return undefined;
+      }
+      // profiles and actions know games by their internal id, which is usually the
+      // nexus domain but not always, and is the installed one where games share a domain
+      const internalId = detectedInternalId(
+        knownGames,
+        discoveredGames,
+        GameDomain(nexusGame.domain_name),
+      );
+      if (profileGames.has(internalId)) {
+        return undefined;
+      }
+      // an installed extension is the ground truth, whatever the endpoint returned
+      if (!isListableDetectedGame(game, internalId, knownGames, detectedListOptions)) {
+        return undefined;
+      }
+      // the same game can be reported more than once, e.g. by several stores
+      if (listedIds.has(internalId)) {
+        return undefined;
+      }
+      // keep the section's hide-a-game behaviour working; a search also shows hidden
+      if (!showHidden && !currentFilterValue && (discoveredGames[internalId]?.hidden ?? false)) {
+        return undefined;
+      }
+      listedIds.add(internalId);
+      if (favourites.has(game.gameId)) {
+        favouriteGameIds.push(internalId);
+      }
+      // discovery names the store only once the game's extension is installed, so
+      // until then the tile takes it from the response
+      const store = detectedStore(game);
+      if (store !== undefined) {
+        detectedStores[internalId] = store;
+      }
+      return {
+        id: internalId,
+        name: nexusGame.name,
+        extensionPath: undefined,
+        imageURL: game.imageUrl,
+        requiredFiles: [],
+        executable: undefined,
+      };
+    })
+    .filter((game): game is IGameStored => game !== undefined);
+
+  // Discovery adds the games the response can't name: ones on stores it doesn't cover
+  // (Xbox, EA, Ubisoft), ones Nexus Mods doesn't list, such as an extension still in
+  // development, and every game while logged out.
+  detectedGameList.push(
+    ...locallyDetectedGames(knownGames, discoveredGames, {
+      addedGameIds: profileGames,
+      includeHidden: showHidden || !!currentFilterValue,
+      listedIds,
+    }),
+  );
 
   const filteredManaged = managedGameList.filter(applyGameFilter).sort(sortBy(sortManaged));
-  const filteredUnmanaged = unmanagedGameList.filter(applyGameFilter).sort(sortBy(sortUnmanaged));
-
-  // Paginate the (potentially large) unmanaged list. The page is clamped so the
-  // view stays valid when filtering/sorting shrinks the list under the cursor.
-  const unmanagedPageCount = Math.max(1, Math.ceil(filteredUnmanaged.length / UNMANAGED_PAGE_SIZE));
-  const currentUnmanagedPage = Math.min(unmanagedPage, unmanagedPageCount);
-  const pagedUnmanaged = filteredUnmanaged.slice(
-    (currentUnmanagedPage - 1) * UNMANAGED_PAGE_SIZE,
-    currentUnmanagedPage * UNMANAGED_PAGE_SIZE,
-  );
+  // The section owns its own sort control, so the input is only filtered here.
+  const filteredDetected = detectedGameList.filter(applyGameFilter);
+  const filteredSupported = supportedGameList.filter(applyGameFilter).sort(sortBy(sortUnmanaged));
 
   const displayOptions = useDisplayOptionsAction({
     pickerLayout,
@@ -295,20 +378,31 @@ const GamePicker = ({
       onSetSortManaged("alphabetical");
       onSetSortUnmanaged("popular");
       onSetShowHidden(false);
-      setUnmanagedPage(1);
     },
     onSetPickerLayout,
     onToggleHidden: () => {
       onSetShowHidden(!showHidden);
-      setUnmanagedPage(1);
     },
   });
 
   const toolbarActions: IToolbarAction[] = [displayOptions];
 
+  // A quick scan reports through its callback rather than redux, so it's tracked here;
+  // the deep search reports through session.discovery and is the only one cancellable.
+  const scrollToSupported = () => {
+    const container = scrollAreaRef.current;
+    const section = supportedSectionRef.current;
+
+    if (container && section) {
+      container.scrollTop +=
+        section.getBoundingClientRect().top - container.getBoundingClientRect().top;
+    }
+  };
+
   return (
-    <Page active={active} pageId={pageId} scrollable={false}>
+    <Page isFullWidth active={active} pageId={pageId} scrollable={false}>
       <PageHeader
+        isFullWidth
         pictogramName="game"
         subtitle={t("Manage games to get started.")}
         title={t("Games")}
@@ -319,7 +413,6 @@ const GamePicker = ({
             value={currentFilterValue}
             onChange={(value) => {
               setCurrentFilterValue(value);
-              setUnmanagedPage(1);
             }}
           />
 
@@ -329,138 +422,40 @@ const GamePicker = ({
         </div>
       </PageHeader>
 
-      <PageScroll ref={scrollAreaRef}>
-        <CollapsibleSection
-          actions={
-            <Picker
-              button={{ appearance: "subdued", size: "sm" }}
-              options={[
-                { label: t("Name A-Z"), value: "alphabetical" },
-                { label: t("Recently used"), value: "recentlyused" },
-              ]}
-              value={sortManaged}
-              onChange={onSetSortManaged}
-            />
-          }
-          title={
-            <span className="flex items-center gap-x-2">
-              {t("Managed")}
+      <PageScroll isFullWidth ref={scrollAreaRef}>
+        <DetectedGames
+          count={getTabGameNumber(detectedGameList, filteredDetected)}
+          detectedStores={detectedStores}
+          filtering={!!currentFilterValue}
+          favourites={favouriteGameIds}
+          games={filteredDetected}
+          hasAddedGames={!!managedGameList.length}
+          onBrowseGameLocation={onBrowseGameLocation}
+          onBrowseSupported={scrollToSupported}
+          onRefreshGameInfo={onRefreshGameInfo}
+        />
 
-              <span className="text-neutral-subdued">
-                {getTabGameNumber(managedGameList, filteredManaged)}
-              </span>
-            </span>
-          }
-        >
-          <Listing
-            entityCount={filteredManaged.length}
-            noResultsMessage={
-              currentFilterValue
-                ? t("Try adjusting your search terms.")
-                : t('To start managing a game, go to "Unmanaged" and activate a game there.')
-            }
-            noResultsTitle={
-              currentFilterValue ? t("No games found") : t("You haven't managed any games yet")
-            }
-          >
-            {pickerLayout === "list" ? (
-              <GamesList
-                discoveredGames={discoveredGames}
-                gameMode={gameMode}
-                games={filteredManaged}
-                t={t}
-                type="managed"
-                onBrowseGameLocation={onBrowseGameLocation}
-                onRefreshGameInfo={onRefreshGameInfo}
-              />
-            ) : (
-              <GamesGrid
-                discoveredGames={discoveredGames}
-                gameMode={gameMode}
-                games={filteredManaged}
-                t={t}
-                type="managed"
-                onRefreshGameInfo={onRefreshGameInfo}
-              />
-            )}
-          </Listing>
-        </CollapsibleSection>
+        <AddedGames
+          count={getTabGameNumber(managedGameList, filteredManaged)}
+          filtering={!!currentFilterValue}
+          games={filteredManaged}
+          sortOrder={sortManaged}
+          onBrowseGameLocation={onBrowseGameLocation}
+          onRefreshGameInfo={onRefreshGameInfo}
+          onSortChange={onSetSortManaged}
+        />
 
-        <CollapsibleSection
-          actions={
-            <Picker
-              button={{ appearance: "subdued", size: "sm" }}
-              options={[
-                { label: t("Most Popular"), value: "popular" },
-                { label: t("Name A-Z"), value: "alphabetical" },
-                { label: t("Most Recent"), value: "recent" },
-              ]}
-              value={sortUnmanaged}
-              onChange={(value) => {
-                onSetSortUnmanaged(value);
-                setUnmanagedPage(1);
-              }}
-            />
-          }
-          ref={unmanagedSectionRef}
-          title={
-            <span className="flex items-center gap-x-2">
-              {t("Unmanaged")}
-
-              <span className="text-neutral-subdued">
-                {getTabGameNumber(unmanagedGameList, filteredUnmanaged)}
-              </span>
-            </span>
-          }
-        >
-          <div className="space-y-6">
-            <Listing
-              customNoResults={<NoGamesFound className="py-16" t={t} />}
-              entityCount={filteredUnmanaged.length}
-            >
-              {pickerLayout === "list" ? (
-                <GamesList
-                  discoveredGames={discoveredGames}
-                  gameMode={gameMode}
-                  games={pagedUnmanaged}
-                  t={t}
-                  type="unmanaged"
-                  onBrowseGameLocation={onBrowseGameLocation}
-                  onRefreshGameInfo={onRefreshGameInfo}
-                />
-              ) : (
-                <GamesGrid
-                  discoveredGames={discoveredGames}
-                  gameMode={gameMode}
-                  games={pagedUnmanaged}
-                  t={t}
-                  type="unmanaged"
-                  onRefreshGameInfo={onRefreshGameInfo}
-                />
-              )}
-            </Listing>
-
-            {!!filteredUnmanaged.length && currentUnmanagedPage === unmanagedPageCount && (
-              <NoGamesFound className="py-6" t={t} />
-            )}
-
-            <Pagination
-              currentPage={currentUnmanagedPage}
-              recordsPerPage={UNMANAGED_PAGE_SIZE}
-              totalRecords={filteredUnmanaged.length}
-              onPaginationUpdate={(page) => {
-                setUnmanagedPage(page);
-
-                const container = scrollAreaRef.current;
-                const section = unmanagedSectionRef.current;
-                if (container && section) {
-                  container.scrollTop +=
-                    section.getBoundingClientRect().top - container.getBoundingClientRect().top;
-                }
-              }}
-            />
-          </div>
-        </CollapsibleSection>
+        <SupportedGames
+          count={getTabGameNumber(supportedGameList, filteredSupported)}
+          filterValue={currentFilterValue}
+          games={filteredSupported}
+          ref={supportedSectionRef}
+          sortOrder={sortUnmanaged}
+          onBrowseGameLocation={onBrowseGameLocation}
+          onPageChange={scrollToSupported}
+          onRefreshGameInfo={onRefreshGameInfo}
+          onSortChange={onSetSortUnmanaged}
+        />
       </PageScroll>
     </Page>
   );
@@ -478,6 +473,8 @@ function mapStateToProps(state: IState): IConnectedProps {
     sortManaged: state.settings.gameMode.sortManaged ?? "alphabetical",
     sortUnmanaged: state.settings.gameMode.sortUnmanaged ?? "alphabetical",
     showHidden: state.session.gameMode.showHidden ?? false,
+    detectedGames: state.session.gameMode.detectedGames ?? [],
+    favouriteGames: state.session.gameMode.favouriteGames ?? [],
   };
 }
 

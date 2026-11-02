@@ -1,4 +1,3 @@
-import { mdiMonitorArrowDownVariant, mdiOpenInNew } from "@mdi/js";
 import React, { useState } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -14,9 +13,8 @@ import {
 } from "@/extensions/health_check/utils/fileRequirements/fileRequirementActions";
 import type { IInstalledFile } from "@/extensions/health_check/utils/fileRequirements/installedFiles";
 import type { IFileRequirementCandidate } from "@/extensions/health_check/utils/fileRequirements/mapRequirementsReport";
-import { decodeUID } from "@/extensions/nexus_integration/util/UIDs";
+import { PremiumBadge } from "@/ui/components/badges/premium_badge/PremiumBadge";
 import { Button } from "@/ui/components/button/Button";
-import { PremiumBadge } from "@/ui/components/premium_badge/PremiumBadge";
 
 import { useInstallButton } from "../../../hooks/useInstallButton";
 import { PremiumModal } from "../../premium_modal/PremiumModal";
@@ -77,7 +75,7 @@ export const CandidateCard = ({
             <Button
               appearance="subdued"
               brand="neutral"
-              leftIconPath={mdiOpenInNew}
+              leftIcon="open_in_new"
               onClick={handleModPage}
             >
               {ctx.showPremiumAd
@@ -89,7 +87,7 @@ export const CandidateCard = ({
               appearance={ctx.installButtonAppearance ?? "strong"}
               brand="neutral"
               isLoading={loading}
-              leftIconPath={mdiMonitorArrowDownVariant}
+              leftIcon="install_desktop"
               rightIcon={ctx.showPremiumAd ? <PremiumBadge /> : undefined}
               size="sm"
               onClick={handleInstall}
@@ -107,7 +105,7 @@ export const CandidateCard = ({
         api={ctx.api}
         isOpen={showPremium}
         modCount={1}
-        modId={decodeUID(candidate.modUID)?.id ?? 0}
+        modUID={candidate.modUID}
         trigger="single_install"
         onClose={() => setShowPremium(false)}
         onDownload={() => {

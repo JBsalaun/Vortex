@@ -5,6 +5,8 @@ import { useToolbarContext } from "./Toolbar.context";
 /** Intrinsic widths of one group's controls, in CSS pixels. */
 export interface IToolbarGroupMetrics {
   itemWidths: number[];
+  /** Whatever else the group holds, which always shows, so it takes its room first. */
+  fixedWidths?: number[];
   kebabWidth: number;
   gap: number;
   padding: number;
@@ -62,6 +64,15 @@ const measureGroup = (group: HTMLElement): IToolbarGroupMetrics => {
     itemWidths: children
       .filter((child) => child.hasAttribute(TOOLBAR_CONTROL_ATTRIBUTE))
       .map((child) => child.offsetWidth),
+    // Laid out ones only: a hidden sentinel Headless UI puts beside a popover takes no room.
+    fixedWidths: children
+      .filter(
+        (child) =>
+          !child.hasAttribute(TOOLBAR_CONTROL_ATTRIBUTE) &&
+          !child.hasAttribute(TOOLBAR_OVERFLOW_ATTRIBUTE),
+      )
+      .map((child) => child.offsetWidth)
+      .filter((width) => width > 0),
     kebabWidth:
       children.find((child) => child.hasAttribute(TOOLBAR_OVERFLOW_ATTRIBUTE))?.offsetWidth ?? 0,
     gap: parsePx(style.columnGap),
@@ -128,7 +139,10 @@ export const fitVisibleActions = ({
       return true;
     }
 
-    const widths = indices.map((index) => metrics.itemWidths[index] ?? 0);
+    const widths = [
+      ...indices.map((index) => metrics.itemWidths[index] ?? 0),
+      ...(metrics.fixedWidths ?? []),
+    ];
 
     if (withKebab) {
       widths.push(metrics.kebabWidth);
@@ -198,9 +212,23 @@ export const useToolbarOverflow = ({
     // the widths only exist once the controls are in the DOM, so the pass that
     // renders them all has to hand what it measured to the pass that collapses
     // them. Runs at most once per distinct action list, before paint.
+    const metrics = measureGroup(groupRef.current);
     // eslint-disable-next-line @eslint-react/set-state-in-effect
-    setMeasurement({ metrics: measureGroup(groupRef.current), signature });
-  }, [isMeasuring, signature]);
+    setMeasurement({ metrics, signature });
+    // The row's width as it is now, with every control rendered, not as last recorded: a
+    // toolbar sized by its content was only as wide as its old action list, and fitting
+    // a longer list into that collapsed it, for good, as the collapsed row then measured
+    // as narrow.
+    // eslint-disable-next-line @eslint-react/set-state-in-effect
+    setAvailableWidth(
+      measureAvailableWidth(
+        groupRef.current,
+        row,
+        row?.clientWidth ?? null,
+        metrics.kebabWidth + metrics.padding,
+      ),
+    );
+  }, [isMeasuring, row, signature]);
 
   const minimumFootprint = measurement
     ? measurement.metrics.kebabWidth + measurement.metrics.padding

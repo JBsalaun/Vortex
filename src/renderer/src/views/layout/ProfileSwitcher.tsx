@@ -10,6 +10,7 @@ import {
   nextProfileId as nextProfileIdSelector,
   profileById as profileByIdSelector,
 } from "../../util/selectors";
+import { ModalLayer } from "../components/modal_layer/ModalLayer";
 import { Dialog } from "../Dialog";
 import { DialogContainer } from "../DialogContainer";
 
@@ -55,6 +56,8 @@ export const ProfileSwitcher: FC<React.PropsWithChildren<unknown>> = () => {
       </div>
 
       <Dialog />
+
+      <ModalLayer />
 
       <DialogContainer visibleDialog={visibleDialog} onHideDialog={onHideDialog} />
     </div>

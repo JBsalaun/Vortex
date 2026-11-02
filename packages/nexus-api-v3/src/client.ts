@@ -1,6 +1,7 @@
 import createClient, { type Middleware } from "openapi-fetch";
 
 import { V3ApiError } from "./errors";
+import type { TelemetryEvent } from "./eventTypes";
 import type { components, paths } from "./generated/nexus-api-v3";
 import type {
   components as internalComponents,
@@ -173,7 +174,7 @@ export function createNexusV3Client(options: NexusV3ClientOptions) {
     async getVortexExtensions(): Promise<{
       extensions: components["schemas"]["VortexExtension"][];
       themes: components["schemas"]["VortexAsset"][];
-      translations: components["schemas"]["VortexAsset"][];
+      translations: components["schemas"]["VortexTranslation"][];
     }> {
       const { data, error, response } = await client.GET("/vortex/extensions");
       if (error) throw toV3Error(error, response);
@@ -182,6 +183,38 @@ export function createNexusV3Client(options: NexusV3ClientOptions) {
         themes: Array.from(data.data.themes),
         translations: Array.from(data.data.translations),
       };
+    },
+
+    async resolveDetectedGames(
+      contents: paths["/vortex/detected-games"]["post"]["requestBody"]["content"]["application/json"],
+    ): Promise<components["schemas"]["DetectedGame"][]> {
+      const { data, error, response } = await client.POST("/vortex/detected-games", {
+        body: contents,
+      });
+
+      if (error) throw toV3Error(error, response);
+
+      const { games } = data.data;
+      const res = Array.from<components["schemas"]["DetectedGame"]>({ length: games.length });
+
+      for (let i = 0; i < games.length; i++) {
+        const game = games[i]!;
+
+        res[i] = {
+          extension: game.extension,
+          game_id: game.game_id,
+          game_uid: game.game_uid,
+          image_url: game.image_url,
+          is_favourite: game.is_favourite,
+          store_ids: {
+            epic: Array.from(game.store_ids.epic),
+            gog: Array.from(game.store_ids.gog),
+            steam: Array.from(game.store_ids.steam),
+          },
+        };
+      }
+
+      return res;
     },
 
     /**
@@ -196,6 +229,65 @@ export function createNexusV3Client(options: NexusV3ClientOptions) {
       if (error) throw toV3Error(error, response);
       return Array.from(data.data.mods);
     },
+
+    /** Fetch one mod's details, its description and tags among them, by its composite mod UID. */
+    async getModById(id: string): Promise<components["schemas"]["Mod"]> {
+      const { data, error, response } = await client.GET("/mods/{id}", {
+        params: { path: { id } },
+      });
+      if (error) throw toV3Error(error, response);
+      return {
+        ...data.data,
+        tags: Array.from(data.data.tags),
+        gallery_images: Array.from(data.data.gallery_images),
+      };
+    },
+
+    /**
+     * Issue signed download links for a mod file version, best CDN location first, and record
+     * the download, so it's only for a download the user asked for. Premium users need no `key`
+     * and `expires`; anyone else needs the pair the website generates. Links expire in hours.
+     */
+    async getModFileVersionDownloadLink(
+      gameDomain: string,
+      fileVersionId: string,
+      download: {
+        key?: string;
+        expires?: number;
+        collectionId?: number;
+        applicationName?: string;
+      } = {},
+    ) {
+      const { data, error, response } = await client.GET(
+        "/games/{game_domain}/mod-file-versions/{game_scoped_id}/download-link",
+        {
+          params: {
+            path: { game_domain: gameDomain, game_scoped_id: fileVersionId },
+            query: {
+              key: download.key,
+              expires: download.expires,
+              collection_id: download.collectionId,
+            },
+            header: { "Application-Name": download.applicationName },
+          },
+        },
+      );
+      if (error) throw toV3Error(error, response);
+      return data.data;
+    },
+
+    /**
+     * Search published mods, sorted, filtered and a page at a time. Every field of the search
+     * is optional; the API defaults to trending, page 1 of 20.
+     */
+    async searchMods(search: components["schemas"]["ModsSearchRequest"]): Promise<{
+      mods: components["schemas"]["ModSummary"][];
+      meta: components["schemas"]["PaginationMeta"];
+    }> {
+      const { data, error, response } = await client.POST("/mods/search", { body: search });
+      if (error) throw toV3Error(error, response);
+      return { mods: Array.from(data.data.mods), meta: data.meta };
+    },
   };
 }
 
@@ -206,7 +298,13 @@ export type NexusV3InternalClient = ReturnType<typeof createNexusV3InternalClien
  * fragment. Same auth and transport as the public client; kept as a separate client so the
  * internal paths stay off the public surface.
  */
-export function createNexusV3InternalClient(options: NexusV3ClientOptions) {
+export function createNexusV3InternalClient(
+  options: NexusV3ClientOptions & {
+    clientName: string;
+    clientVersion: string;
+    instanceId?: string;
+  },
+) {
   const client = createClient<internalPaths>({
     baseUrl: options.baseUrl,
     headers: authHeaders(options),
@@ -225,6 +323,31 @@ export function createNexusV3InternalClient(options: NexusV3ClientOptions) {
       const { data, error, response } = await client.POST("/telemetry/mod-lists", {
         body: snapshot,
       });
+      if (error) throw toV3Error(error, response);
+      return data.data;
+    },
+
+    async telemetryEvent(id: string, date: Temporal.Instant, event: TelemetryEvent) {
+      const { data, error, response } = await client.POST("/telemetry/events", {
+        body: {
+          client: {
+            name: options.clientName,
+            version: options.clientVersion,
+            instance_id: options.instanceId,
+          },
+
+          events: [
+            {
+              id: id,
+              occurred_at: date.toString(),
+              version: event.version,
+              type: event.type,
+              payload: event.payload,
+            },
+          ],
+        },
+      });
+
       if (error) throw toV3Error(error, response);
       return data.data;
     },

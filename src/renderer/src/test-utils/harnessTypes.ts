@@ -4,18 +4,37 @@
  * in each other's runtime code.
  */
 import type NexusT from "@nexusmods/nexus-api";
+import type { VortexProfileId } from "@vortex/shared";
 import type { WireDownloadCheckpoint } from "@vortex/shared/ipc";
+import type { LootAsync } from "loot";
 import type { Mock } from "vitest";
 
 import type { MixpanelEvent } from "../extensions/analytics/mixpanel/MixpanelEvents";
 import type { ICollectionMod } from "../extensions/collections/types/ICollection";
 import type InstallDriver from "../extensions/collections/util/InstallDriver";
 import type { IDownload } from "../extensions/download_management/types/IDownload";
-import type UpdateSet from "../extensions/file_based_loadorder/UpdateSet";
+import type {
+  ILoadOrderGameInfo,
+  IRegisteredLoadOrder,
+  LoadOrder,
+} from "../extensions/file_based_loadorder/types/types";
+import type LootInterface from "../extensions/gamebryo_plugin_management/autosort";
+import type {
+  IPlugin,
+  IPlugins,
+  IPluginsLoot,
+} from "../extensions/gamebryo_plugin_management/types/IPlugins";
+import type { IStateWithGamebryo } from "../extensions/gamebryo_plugin_management/types/IStateWithGamebryo";
+import type PluginPersistor from "../extensions/gamebryo_plugin_management/util/PluginPersistor";
 import type { IGameStored } from "../extensions/gamemode_management/types/IGameStored";
 import type { HealthCheckRegistry } from "../extensions/health_check/core/HealthCheckRegistry";
+import type { IHistoryEvent } from "../extensions/history_management/types";
 import type InstallContext from "../extensions/mod_management/InstallContext";
 import type InstallManager from "../extensions/mod_management/InstallManager";
+import type {
+  IDeployedFile,
+  IDeploymentMethod,
+} from "../extensions/mod_management/types/IDeploymentMethod";
 import type { IMod, IModRule } from "../extensions/mod_management/types/IMod";
 import type { InstallPhaseTracker } from "../extensions/mod_management/util/InstallPhaseTracker";
 import type { IValidateKeyDataV2 } from "../extensions/nexus_integration/types/IValidateKeyData";
@@ -26,8 +45,9 @@ import type {
   ICollectionInstallState,
 } from "../types/collections/ICollectionInstallSession";
 import type { DialogType, IDialogResult } from "../types/IDialog";
-import type { IExtensionApi } from "../types/IExtensionContext";
+import type { IExtensionApi, IRunOptions } from "../types/IExtensionContext";
 import type { IHealthCheckResult } from "../types/IHealthCheck";
+import type { INotification } from "../types/INotification";
 import type { IState } from "../types/IState";
 
 /** A dispatched redux-act action as the harness sees it. */
@@ -52,6 +72,14 @@ export interface IDriverHarnessState {
   availableExtensions: Array<{ modId: number }>;
   // the cached membership (state.persistent.nexus.userInfo); undefined models "not fetched yet"
   userInfo: Partial<IValidateKeyDataV2> | undefined;
+  // the active profile id (state.settings.profiles.activeProfileId)
+  activeProfileId: string | undefined;
+  // last active profile per game, keyed by gameId (state.settings.profiles.lastActiveProfile)
+  lastActiveProfile: Record<string, string>;
+  // staging folder per game, keyed by gameId (state.settings.mods.installPath)
+  installPath: Record<string, string>;
+  // discovered game folders, keyed by gameId (state.settings.gameMode.discovered)
+  discovered: Record<string, { path: string }>;
 }
 
 export interface IApiHarness {
@@ -60,6 +88,8 @@ export interface IApiHarness {
   dispatched: ITrackedAction[];
   // emit a global event (runs any registered on/onAsync listeners synchronously)
   emit: (event: string, ...args: unknown[]) => void;
+  // emit a global event and await what its listeners return, as production emitAndAwait does
+  emitAndAwait: (event: string, ...args: unknown[]) => Promise<void>;
   // read the live fake state
   getState: () => IState;
   // mutate the state mid-test (to model churn between events)
@@ -71,8 +101,18 @@ export interface IApiHarness {
   // showErrorNotification calls, recorded in order. allowReport matters: a false here is what
   // keeps the Report button off a failure the user caused or can act on themselves
   errorNotifications: Array<{ title: string; message: unknown; allowReport: boolean | undefined }>;
-  // sendNotification calls, recorded in order
-  notifications: Array<{ type: string; message: string }>;
+  // sendNotification calls, recorded in order (full notification, so ids/actions are assertable)
+  notifications: INotification[];
+  // dismissNotification calls, the notification ids in order
+  dismissedNotifications: string[];
+  // ext.addToHistory calls, recorded in order
+  historyEntries: Array<{ stack: string; entry: IHistoryEvent }>;
+  // ext.showHistory calls, recorded in order
+  showHistoryCalls: string[];
+  // api.runExecutable calls, recorded in order (the call is captured, nothing is spawned)
+  runExecutableCalls: Array<{ executable: string; args: string[]; options: IRunOptions }>;
+  // configure how a process started through api.runExecutable runs (default: ends at once)
+  setRunProcess: (run: (options: IRunOptions) => Promise<void>) => void;
 }
 
 export interface IDriverHarness extends IApiHarness {
@@ -80,23 +120,123 @@ export interface IDriverHarness extends IApiHarness {
   driver: InstallDriver;
 }
 
-/** What a file-based load order test arranges. */
-export interface IFbloHarnessOpts {
+/** What a game-scoped harness arranges: an active profile on a game plus its installed mods. */
+export interface IGameHarnessOpts {
   // the managed game (defaults to skyrimse); set active + last-active in state
   gameId?: string;
   // the active profile id (defaults to profile-1)
   profileId?: string;
   // the game's installed mods, keyed by modId (state.persistent.mods[gameId])
   mods?: Record<string, IMod>;
-  // whether a game uses FBLO, as UpdateSet asks (defaults to always true)
-  isFBLO?: (gameId: string) => boolean;
+  // staging folder per game, keyed by gameId (state.settings.mods.installPath)
+  installPath?: Record<string, string>;
+  // the game's discovered install folder (state.settings.gameMode.discovered[gameId].path);
+  // undiscovered unless set
+  gamePath?: string;
+  // this Vortex instance's id (state.app.instanceId), which deployment manifests record
+  instanceId?: string;
+  // the game's configured deployment method (state.settings.mods.activator); none unless set
+  activatorId?: string;
 }
 
-export interface IFbloHarness extends IApiHarness {
-  // an UpdateSet constructed against the fake api
-  updateSet: UpdateSet;
+export interface IDeployedGameHarness extends IGameHarness {
+  // writes a file into the default mod type's deploy target and returns its manifest entry
+  deployFile: (relPath: string, target?: string) => Promise<IDeployedFile>;
+  // saves the default mod type's manifest as written by the given deployment method
+  saveManifest: (files: IDeployedFile[], methodId: string) => PromiseLike<unknown>;
+  // installs and deploys one plugin per mod over the saved manifest
+  deployMods: (method: IDeploymentMethod, modIds: string[]) => Promise<void>;
+  // the relPaths the default mod type's manifest lists
+  recordedFiles: () => Promise<string[]>;
+  isDeployed: (file: IDeployedFile) => boolean;
+}
+
+export interface IGameHarness extends IApiHarness {
   gameId: string;
   profileId: string;
+  stagingPath: string;
+  dataPath?: string;
+}
+
+/** What a file-based load order test arranges. */
+export type IFbloHarnessOpts = IGameHarnessOpts;
+
+export interface IFbloHarness extends IGameHarness {
+  // register a load order for the harness game, as a game extension's registerLoadOrder does
+  registerLoadOrder: (overrides?: Partial<ILoadOrderGameInfo>) => IRegisteredLoadOrder;
+  // the active profile's load order with that id (its primary when omitted), read back from state
+  loadOrder: (loadOrderId?: string) => LoadOrder;
+}
+
+/** What a gamebryo plugin-management test arranges. */
+export type IGamebryoHarnessOpts = IGameHarnessOpts;
+
+export interface IGamebryoHarness extends IGameHarness {
+  // read the live fake state including the gamebryo hives
+  getGamebryoState: () => IStateWithGamebryo;
+  // read the live session.plugins.pluginList hive
+  pluginList: () => IPlugins;
+}
+
+/** The LootAsync members autosort drives. */
+type DrivenLoot = Pick<
+  LootAsync,
+  | "clearConditionCache"
+  | "close"
+  | "getGroupsPath"
+  | "getPlugin"
+  | "getPluginMetadata"
+  | "isClosed"
+  | "loadCurrentLoadOrderState"
+  | "loadLists"
+  | "loadPlugins"
+  | "sortPlugins"
+>;
+
+/** A controllable stand-in for a LootAsync instance: every member autosort drives as a mock. */
+export type IFakeLoot = { [K in keyof DrivenLoot]: Mock<DrivenLoot[K]> } & Pick<
+  LootAsync,
+  "strayConnections"
+>;
+
+/** The plugin persistor's file lifecycle as a controllable fake: every call a mock. */
+export type IFakePersistor = {
+  [K in "loadFiles" | "disable" | "setKnownPlugins"]: Mock<PluginPersistor[K]>;
+};
+
+/** What a LootInterface test arranges on top of the gamebryo harness. */
+export interface ILootHarnessOpts extends IGamebryoHarnessOpts {
+  // reject the loot construction, leaving the interface with loot undefined
+  initError?: Error;
+  // the plugin names findInvalidPlugins reports as invalid
+  invalidPlugins?: string[];
+  // the game's native plugins as lowercase ids, the first being its main master (default: none)
+  nativePlugins?: string[];
+  // the profile's plugin-management toggle as the mocked gameSupported answers it (default: on);
+  // the store's own setting is not consulted in loot suites
+  pluginManagement?: boolean;
+}
+
+export interface ILootHarness extends IGamebryoHarness {
+  // the loot instance the interface holds, arranged per test
+  loot: IFakeLoot;
+  // the LootInterface under test, constructed against the fake api and awaited through init
+  lootInterface: LootInterface;
+  // create a real plugin file in dataDir (the sort path stats plugin files) and return its path
+  addPluginFile: (name: string) => Promise<string>;
+  // seed session.plugins.pluginList, keyed by toPluginId, with a real file per plugin (unless
+  // filePath is overridden); a spec is a file name or a name plus IPlugin overrides
+  seedPlugins: (specs: Array<string | ({ name: string } & Partial<IPlugin>)>) => Promise<void>;
+  // where readLists looks for the game's userlist.yaml (absent unless a test creates it)
+  userlistPath: string;
+  // the game's Data folder as gameDataPath resolves it; seeded plugin files live here
+  dataDir: string;
+  // emit autosort-plugins and resolve with the value the sort passed to its callback
+  sort: (manual: boolean) => Promise<Error | null>;
+  // emit plugin-details for the harness game and resolve with the answered details
+  requestDetails: (plugins: string[]) => Promise<IPluginsLoot>;
+  // emit restart-helpers, which replaces the loot instance (fire-and-forget in production)
+  restartHelpers: () => void;
 }
 
 // What a download-adapter test arranges: the single seeded download's fields, an optional stored
@@ -191,6 +331,13 @@ export interface IManagerInternals {
     recommended: boolean,
     silent: boolean,
   ) => Promise<unknown[]>;
+  updateRules: (
+    api: unknown,
+    gameId: string,
+    sourceModId: string,
+    dependencies: unknown[],
+    recommended: boolean,
+  ) => Promise<void>;
   withInstructions: (
     api: unknown,
     sourceName: string,
@@ -215,6 +362,41 @@ export interface IManagerInternals {
   mPendingInstalls: Map<string, unknown>;
   // the per-collection cancel callback the completion poll checks, keyed by collection mod id
   mDependencyInstalls: Record<string, () => void>;
+}
+
+/** What a profile switch test arranges. */
+export interface IProfileSwitchOpts {
+  // every profile, across all games
+  profiles: IProfile[];
+  // the profile active when the test starts
+  activeProfileId: string;
+  // each game's last active profile, keyed by gameId
+  lastActive: Record<string, string>;
+  // whether a game has undeployed changes, keyed by gameId
+  needToDeploy?: Record<string, boolean>;
+  // the game's live settings file, keyed by gameId
+  gameSettings?: Record<string, string>;
+  // the settings file saved in each profile, keyed by profileId
+  savedSettings?: Record<string, string>;
+  // the error a profile's deployment fails with, keyed by profileId
+  failingDeploys?: Record<VortexProfileId, Error>;
+}
+
+export interface IProfileSwitchHarness extends IApiHarness {
+  // switch the way the UI does (SET_NEXT_PROFILE) and resolve once the profile is active
+  switchTo: (profileId: string) => Promise<void>;
+  // resolves on the next profile-did-change, for switches a test triggers some other way
+  profileChanged: () => Promise<void>;
+  // the profiles deployed since the harness was built, in order
+  deployed: string[];
+  // the game's live settings file, which a deploy of profile X rewrites to "deployed:X"
+  gameSettings: (gameId: string) => Promise<string | undefined>;
+  // the settings file saved in a profile
+  savedSettings: (profileId: string) => Promise<string | undefined>;
+  // messages logged since the harness was built, in order
+  loggedMessages: () => string[];
+  // remove every file the harness wrote; the profileSwitchTest fixture calls this on teardown
+  cleanup: () => Promise<void>;
 }
 
 /** What a health-check registry test arranges. */

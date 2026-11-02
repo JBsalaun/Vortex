@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 
 import { verify } from "../../../reducers/verify";
+import { makeMod, makeRule } from "../../../test-utils/builders";
+import type { IMod, IModRule } from "../types/IMod";
 import { modsReducer } from "./mods";
 
 const noEmit = (): void => undefined;
@@ -394,7 +396,7 @@ describe("verifiers: installationPath self-heal (GH#23363/#23355)", () => {
           archiveId: "0X09f7lm8",
           attributes: { name: "Directional Movement Keys", version: "1.2.1" },
         },
-        "Good Mod-1-0-0": { installationPath: "Good Mod-1-0-0" },
+        "Good Mod-1-0-0": makeMod({ id: "Good Mod-1-0-0", installationPath: "Good Mod-1-0-0" }),
       },
     };
 
@@ -436,7 +438,12 @@ describe("verifiers: installationPath self-heal (GH#23363/#23355)", () => {
   });
 
   it("still drops a mod entry that isn't an object", () => {
-    const state = { skyrimse: { good: { installationPath: "good" }, bad: "not an object" } };
+    const state = {
+      skyrimse: {
+        good: makeMod({ id: "good", installationPath: "good" }),
+        bad: "not an object",
+      },
+    };
 
     const result = verify(
       "persistent.mods",
@@ -448,5 +455,197 @@ describe("verifiers: installationPath self-heal (GH#23363/#23355)", () => {
 
     expect(result.skyrimse.good.installationPath).toBe("good");
     expect(result.skyrimse).not.toHaveProperty("bad");
+  });
+
+  it("keeps a mod that lost only its state leaf", () => {
+    // it comes back untouched: any change makes hydration report a repaired
+    // state and nag about an invalid app state.
+    const state = {
+      skyrimse: {
+        "Real Mod-1-0-0": {
+          id: "Real Mod-1-0-0",
+          installationPath: "Real Mod-1-0-0",
+          archiveId: "arch1",
+          attributes: { name: "Real Mod", version: "1.0" },
+        },
+      },
+    };
+
+    const result = verify(
+      "persistent.mods",
+      modsReducer.verifiers,
+      state,
+      modsReducer.defaults,
+      noEmit,
+    ) as Record<string, Record<string, IMod>>; // keyed by gameId, then modId
+
+    expect(result).toBe(state);
+  });
+
+  it("keeps a mod whose state leaf went null", () => {
+    const state = {
+      skyrimse: {
+        "Real Mod-1-0-0": {
+          id: "Real Mod-1-0-0",
+          installationPath: "Real Mod-1-0-0",
+          state: null,
+          attributes: { name: "Real Mod" },
+        },
+      },
+    };
+
+    const result = verify(
+      "persistent.mods",
+      modsReducer.verifiers,
+      state,
+      modsReducer.defaults,
+      noEmit,
+    ) as Record<string, Record<string, IMod>>; // keyed by gameId, then modId
+
+    const mod = result.skyrimse["Real Mod-1-0-0"];
+    expect(mod).toBeDefined();
+    expect(mod.id).toBe("Real Mod-1-0-0");
+    expect(mod.attributes).toEqual({ name: "Real Mod" });
+  });
+});
+
+describe("setModArchiveId", () => {
+  it("rebinds the archive of a known mod", () => {
+    const input = { gameId1: { modId1: { installationPath: "modId1", archiveId: "old" } } };
+    const result = modsReducer.reducers.SET_MOD_ARCHIVEID(input, {
+      gameId: "gameId1",
+      modId: "modId1",
+      archiveId: "new",
+    });
+    expect(result).toEqual({
+      gameId1: { modId1: { installationPath: "modId1", archiveId: "new" } },
+    });
+  });
+
+  it("does nothing if the mod doesn't exist", () => {
+    const input = { gameId1: {} };
+    const result = modsReducer.reducers.SET_MOD_ARCHIVEID(input, {
+      gameId: "gameId1",
+      modId: "modId1",
+      archiveId: "new",
+    });
+    expect(result).toEqual({ gameId1: {} });
+  });
+
+  it("does nothing if the game doesn't exist", () => {
+    const input = { gameId1: { modId1: { installationPath: "modId1" } } };
+    const result = modsReducer.reducers.SET_MOD_ARCHIVEID(input, {
+      gameId: "gameId2",
+      modId: "modId1",
+      archiveId: "new",
+    });
+    expect(result).toEqual({ gameId1: { modId1: { installationPath: "modId1" } } });
+  });
+
+  it("does not resurrect a mod that was just removed", () => {
+    const removed = modsReducer.reducers.REMOVE_MOD(
+      { gameId1: { modId1: { installationPath: "modId1", archiveId: "old", state: "installed" } } },
+      { gameId: "gameId1", modId: "modId1" },
+    );
+    const result = modsReducer.reducers.SET_MOD_ARCHIVEID(removed, {
+      gameId: "gameId1",
+      modId: "modId1",
+      archiveId: "new",
+    });
+    expect(result).toEqual({ gameId1: {} });
+  });
+});
+
+describe("modRulesReplaced", () => {
+  const GAME = "skyrimse";
+  const COLLECTION = "col";
+  type Replacement = { oldRule: IModRule; newRule: IModRule };
+
+  const withRules = (rules: IModRule[]) => ({
+    [GAME]: { [COLLECTION]: makeMod({ id: COLLECTION, type: "collection", rules }) },
+  });
+  const optional = (rule: IModRule): IModRule => ({
+    ...rule,
+    type: "recommends",
+    reference: { ...rule.reference, idHint: "mod-x" },
+  });
+  const pairByPair = (state: ReturnType<typeof withRules>, replacements: Replacement[]) =>
+    replacements.reduce(
+      (current, { oldRule, newRule }) =>
+        modsReducer.reducers.ADD_MOD_RULE(
+          modsReducer.reducers.REMOVE_MOD_RULE(current, {
+            gameId: GAME,
+            modId: COLLECTION,
+            rule: oldRule,
+          }),
+          { gameId: GAME, modId: COLLECTION, rule: newRule },
+        ),
+      state,
+    );
+
+  // plain references: makeReference adds a tag, which stops a reference being id-only
+  const tagged = [0, 1, 2].map((member) =>
+    makeRule({ reference: { tag: `tag-${member}`, fileMD5: `md5-${member}` } }),
+  );
+  const loadOrder = makeRule({ type: "after", reference: { tag: "tag-1", fileMD5: "md5-1" } });
+  const idOnly = makeRule({ reference: { id: "id-only" } });
+  const untagged = makeRule({ reference: { logicalFileName: "untagged", id: "id-1" } });
+
+  it.each<[string, IModRule[], Replacement[]]>([
+    [
+      "every member rule turning optional",
+      tagged,
+      tagged.map((rule) => ({ oldRule: rule, newRule: optional(rule) })),
+    ],
+    [
+      "a member rule sharing its reference with a load order rule",
+      [tagged[0], loadOrder, tagged[1]],
+      [{ oldRule: tagged[1], newRule: optional(tagged[1]) }],
+    ],
+    [
+      "a duplicated member rule",
+      [tagged[0], tagged[0], tagged[1]],
+      [{ oldRule: tagged[0], newRule: optional(tagged[0]) }],
+    ],
+    [
+      "an id-only member rule",
+      [tagged[0], idOnly],
+      [{ oldRule: idOnly, newRule: optional(idOnly) }],
+    ],
+    [
+      "an untagged member rule",
+      [untagged, tagged[0]],
+      [{ oldRule: untagged, newRule: optional(untagged) }],
+    ],
+    [
+      "a rule no longer present",
+      [tagged[0]],
+      [{ oldRule: tagged[1], newRule: optional(tagged[1]) }],
+    ],
+  ])(
+    "leaves the rules as one remove and add per rule would, for %s",
+    (_case, rules, replacements) => {
+      const state = withRules(rules);
+
+      expect(
+        modsReducer.reducers.MOD_RULES_REPLACED(state, {
+          gameId: GAME,
+          modId: COLLECTION,
+          replacements,
+        }),
+      ).toEqual(pairByPair(state, replacements));
+    },
+  );
+
+  it("leaves a mod that isn't installed alone", () => {
+    const state = withRules([]);
+
+    expect(
+      modsReducer.reducers.MOD_RULES_REPLACED(state, {
+        gameId: GAME,
+        modId: "missing",
+        replacements: [{ oldRule: tagged[0], newRule: optional(tagged[0]) }],
+      }),
+    ).toBe(state);
   });
 });

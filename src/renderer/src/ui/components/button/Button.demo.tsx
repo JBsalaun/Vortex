@@ -3,7 +3,6 @@
  * Demonstrates the Button component variants and features
  */
 
-import { mdiCheck, mdiChevronRight, mdiCog, mdiDownload } from "@mdi/js";
 import React, { useState } from "react";
 
 import { Typography } from "@/ui/components/typography/Typography";
@@ -58,7 +57,7 @@ export const ButtonDemo = () => {
                     appearance={appearance}
                     aria-label={`${titleCase(brand)} ${titleCase(appearance)} icon only`}
                     brand={brand}
-                    leftIconPath={mdiCog}
+                    leftIcon={{ name: "settings", filled: true }}
                   />
                 </React.Fragment>
               ))}
@@ -69,12 +68,38 @@ export const ButtonDemo = () => {
 
       <div className="space-y-4">
         <Typography as="h3" typographyType="heading-xs">
+          Scrim
+        </Typography>
+
+        <Typography appearance="subdued" typographyType="body-sm">
+          Neutral only, and outside the matrix above: it paints its own scrim so the button holds
+          over artwork whatever the theme, which is why it is shown on a bright ground.
+        </Typography>
+
+        <div className="flex flex-wrap items-center gap-4 rounded-sm bg-surface-inverted p-3">
+          <Button appearance="scrim" brand="neutral">
+            Scrim
+          </Button>
+
+          <Button
+            appearance="scrim"
+            aria-label="Scrim icon only"
+            brand="neutral"
+            leftIcon={{ name: "settings", filled: true }}
+          />
+
+          <Button appearance="scrim" brand="neutral" disabled={true}>
+            Disabled
+          </Button>
+        </div>
+      </div>
+
+      <div className="space-y-4">
+        <Typography as="h3" typographyType="heading-xs">
           Sizes
         </Typography>
 
         <div className="flex flex-wrap items-center gap-4">
-          <Button size="lg">Large</Button>
-
           <Button>Medium (default)</Button>
 
           <Button size="sm">Small</Button>
@@ -117,17 +142,17 @@ export const ButtonDemo = () => {
         </Typography>
 
         <div className="flex flex-wrap items-center gap-4">
-          <Button leftIconPath={mdiDownload}>Download</Button>
+          <Button leftIcon="download">Download</Button>
 
-          <Button brand="neutral" appearance="subdued" rightIconPath={mdiChevronRight}>
+          <Button appearance="subdued" brand="neutral" rightIcon="chevron_right">
             Next
           </Button>
 
-          <Button brand="success" leftIconPath={mdiCheck}>
+          <Button brand="success" leftIcon="check">
             Confirm
           </Button>
 
-          <Button brand="neutral" appearance="weak" leftIconPath={mdiCog}>
+          <Button appearance="weak" brand="neutral" leftIcon={{ name: "settings", filled: true }}>
             Settings
           </Button>
         </div>
@@ -148,17 +173,19 @@ export const ButtonDemo = () => {
               appearance={appearance}
               aria-label={`Settings (${appearance})`}
               key={appearance}
-              leftIconPath={mdiCog}
+              leftIcon={{ name: "settings", filled: true }}
             />
           ))}
         </div>
 
         <div className="flex flex-wrap items-center gap-4">
-          <Button aria-label="Settings (lg)" leftIconPath={mdiCog} size="lg" />
+          <Button aria-label="Settings (md)" leftIcon={{ name: "settings", filled: true }} />
 
-          <Button aria-label="Settings (md)" leftIconPath={mdiCog} />
-
-          <Button aria-label="Settings (sm)" leftIconPath={mdiCog} size="sm" />
+          <Button
+            aria-label="Settings (sm)"
+            leftIcon={{ name: "settings", filled: true }}
+            size="sm"
+          />
         </div>
       </div>
     </div>

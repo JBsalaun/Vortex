@@ -1,20 +1,9 @@
-import {
-  mdiCancel,
-  mdiChevronDown,
-  mdiChevronRight,
-  mdiDelete,
-  mdiDrag,
-  mdiFolderPlus,
-  mdiPlus,
-  mdiRename,
-  mdiSubdirectoryArrowRight,
-} from "@mdi/js";
 import type { TFunction } from "i18next";
 import React, { useRef, useState } from "react";
 import { useDrag, useDrop } from "react-dnd";
 
 import { Button } from "@/ui/components/button/Button";
-import { Input } from "@/ui/components/form/input/Input";
+import { TextField } from "@/ui/components/form/text_field/TextField";
 import { Icon } from "@/ui/components/icon/Icon";
 import { Toolbar } from "@/ui/components/toolbar/Toolbar";
 import type { IToolbarAction } from "@/ui/components/toolbar/ToolbarGroup";
@@ -112,19 +101,19 @@ export default function CategoryListItem({
   const actions: IToolbarAction[] = [
     {
       label: "Edit",
-      iconPath: mdiRename,
+      icon: "edit",
       testId: "category-rename",
       onClick: () => setEditMode("name"),
     },
     {
       label: "New Sub-Category",
-      iconPath: mdiFolderPlus,
+      icon: "create_new_folder",
       testId: "category-add-subcategory",
       onClick: () => setEditMode("subcategory"),
     },
     {
       label: "Delete",
-      iconPath: mdiDelete,
+      icon: { name: "delete", filled: true },
       testId: "category-delete",
       onClick: () => remove(categoryId),
     },
@@ -164,9 +153,9 @@ export default function CategoryListItem({
       <div className={`flex ${indicatorClass}`} ref={ref}>
         <div className="flex grow gap-2">
           <div className="flex items-center gap-2">
-            <Icon className="cursor-move" path={mdiDrag} />
+            <Icon className="cursor-move" name="drag_indicator" />
 
-            {!!parentId && <Icon path={mdiSubdirectoryArrowRight} />}
+            {!!parentId && <Icon name="subdirectory_arrow_right" />}
 
             {children.length > 0 && (
               <Button
@@ -174,7 +163,7 @@ export default function CategoryListItem({
                 aria-label="Expand/Collapse"
                 brand="neutral"
                 data-testid="category-expand"
-                leftIconPath={expanded ? mdiChevronDown : mdiChevronRight}
+                leftIcon={expanded ? "keyboard_arrow_down" : "chevron_right"}
                 title="Expand/Collapse"
                 onClick={() => expand(categoryId)}
               />
@@ -193,11 +182,11 @@ export default function CategoryListItem({
 
             {editName && (
               <div className="flex gap-2">
-                <Input
+                <TextField
                   hideLabel
                   className="grow"
                   data-testid="category-rename-input"
-                  id={`rename-category-${categoryId}`}
+                  label="Rename category"
                   minLength={1}
                   placeholder="Rename category"
                   type="text"
@@ -210,7 +199,7 @@ export default function CategoryListItem({
                   aria-label="Save"
                   brand="primary"
                   data-testid="category-rename-save"
-                  leftIconPath={mdiPlus}
+                  leftIcon="add"
                   onClick={rename}
                 />
 
@@ -219,7 +208,7 @@ export default function CategoryListItem({
                   aria-label="Cancel"
                   brand="neutral"
                   data-testid="category-rename-cancel"
-                  leftIconPath={mdiCancel}
+                  leftIcon="block"
                   onClick={() => setEditMode()}
                 />
               </div>
@@ -236,10 +225,11 @@ export default function CategoryListItem({
 
       {addNew && (
         <div className="flex gap-2">
-          <Input
+          <TextField
             hideLabel
             className="grow"
             data-testid="category-subcategory-input"
+            label="Add subcategory"
             minLength={1}
             placeholder="Add subcategory"
             type="text"
@@ -253,7 +243,7 @@ export default function CategoryListItem({
             brand="primary"
             data-testid="category-subcategory-save"
             disabled={newSubcategoryName.length < 2}
-            leftIconPath={mdiPlus}
+            leftIcon="add"
             size="sm"
             onClick={() => createCategory(newSubcategoryName)}
           />
@@ -263,7 +253,7 @@ export default function CategoryListItem({
             aria-label="Cancel"
             brand="neutral"
             data-testid="category-subcategory-cancel"
-            leftIconPath={mdiCancel}
+            leftIcon="block"
             onClick={() => setEditMode()}
           />
         </div>

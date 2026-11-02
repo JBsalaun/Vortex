@@ -112,12 +112,14 @@ import { EventEmitter } from "events";
 import { readFile } from "node:fs/promises";
 import * as path from "path";
 
+import { QueryClientProvider } from "@tanstack/react-query";
+
 import "./util/application.electron";
 import { getErrorCode, getErrorMessageOrDefault, unknownToError } from "@vortex/shared";
 import type { IParameters } from "@vortex/shared/cli";
 import type { AppInitMetadata } from "@vortex/shared/ipc";
 import Bluebird from "bluebird";
-import { ipcRenderer, webFrame } from "electron";
+import { ipcRenderer } from "electron";
 import React from "react";
 
 import "./util/monkeyPatching";
@@ -144,6 +146,7 @@ import { ApplicationData } from "./applicationData";
 import { FlagsProvider } from "./contexts/FlagsContext";
 import ExtensionManager from "./ExtensionManager";
 import { ExtensionContext } from "./ExtensionProvider";
+import { initializeZoom } from "./extensions/settings_interface/utils/initializeZoom";
 import { FlagService } from "./FlagService";
 import { log } from "./logging";
 import { initApplicationMenu } from "./menu";
@@ -168,6 +171,8 @@ import GlobalNotifications from "./util/GlobalNotifications";
 import { init as getI18n, changeLanguage, fallbackTFunc, type TFunction } from "./util/i18n";
 import { showError } from "./util/message";
 import migrate from "./util/migrate";
+import { queryClient } from "./util/queryClient";
+import { applyReduceMotion, reduceMotionFromState } from "./util/reduceMotion";
 import { readStartupSettings } from "./util/startupSettings";
 import { getSafe } from "./util/storeHelper";
 import { bytesToString, getAllPropertyNames } from "./util/util";
@@ -901,13 +906,15 @@ async function load(extensions: ExtensionManager): Promise<void> {
   ReactDOM.render(
     <Provider store={store}>
       <FlagsProvider>
-        <DndProvider backend={HTML5Backend}>
-          <I18nextProvider i18n={i18n}>
-            <ExtensionContext.Provider value={extensions}>
-              <AppLayout className="full-height" />
-            </ExtensionContext.Provider>
-          </I18nextProvider>
-        </DndProvider>
+        <QueryClientProvider client={queryClient}>
+          <DndProvider backend={HTML5Backend}>
+            <I18nextProvider i18n={i18n}>
+              <ExtensionContext.Provider value={extensions}>
+                <AppLayout className="full-height" />
+              </ExtensionContext.Provider>
+            </I18nextProvider>
+          </DndProvider>
+        </QueryClientProvider>
       </FlagsProvider>
     </Provider>,
     document.getElementById("content"),
@@ -919,7 +926,8 @@ function renderer(extensions: ExtensionManager | null) {
     return;
   }
 
-  webFrame.setZoomFactor(getSafe(store.getState(), ["settings", "window", "zoomFactor"], 1));
+  initializeZoom(store);
+  applyReduceMotion(reduceMotionFromState(store.getState()));
 
   ReactDOM.render(<LoadingScreen extensions={extensions} />, document.getElementById("content"));
   ipcRenderer.send("show-window");

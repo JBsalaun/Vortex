@@ -1,3 +1,7 @@
+// TODO: remove polyfill with Node.js 26 upgrade
+import { install } from "temporal-polyfill/shim";
+install();
+
 // IPC handler for forked child processes requesting Electron app info
 if (process.send) {
   process.on("message", (msg: unknown) => {
@@ -41,6 +45,8 @@ if (process.env.VORTEX_E2E === "1") {
   }
 }
 
+import { NativePathResolver } from "@vortex/shared/filesystem";
+
 import Application from "./Application";
 import { parseCommandline } from "./cli";
 import { init as initDownloadIpc } from "./downloading/ipc";
@@ -53,6 +59,10 @@ import {
   sendPendingNativeCrashReport,
   sendReportFile,
 } from "./errorReporting";
+import { NodeFileSystemBackendImpl } from "./filesystem/backend";
+import { NodeFileSystemImpl } from "./filesystem/filesystem-impl";
+import { initFileSystem } from "./filesystem/instance";
+import { PathResolverRegistryImpl } from "./filesystem/path-resolver-registry";
 import { getVortexPath } from "./getVortexPath";
 import { init as initIpcHandlers } from "./ipcHandlers";
 import { log } from "./logging";
@@ -305,7 +315,15 @@ async function main(): Promise<void> {
   const uploadManager = new UploadManager({ userAgent: `Vortex/${app.getVersion()}` });
   const application = new Application(mainArgs);
 
-  initIpcHandlers();
+  // The registry holds exactly one resolver for the universal `native`
+  // scheme. Path providers are owned by the app, never by the registry.
+  const fs = new NodeFileSystemImpl(
+    new NodeFileSystemBackendImpl(),
+    new PathResolverRegistryImpl([new NativePathResolver()]),
+  );
+  initFileSystem(fs);
+
+  initIpcHandlers(fs);
   initDownloadIpc(downloadManager);
   initUploadIpc(uploadManager);
   initTelemetryIpcHandler();
